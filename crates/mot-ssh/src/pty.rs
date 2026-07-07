@@ -82,14 +82,28 @@ pub async fn spawn_pane(
                         Some(ChannelMsg::ExitStatus { exit_status: es }) => {
                             exit_status = Some(es);
                         }
-                        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => {
+                            log::info!("pane {id}: リモートがチャネルを閉じた (Eof/Close)");
+                            break;
+                        }
+                        None => {
+                            // channel.wait()=None はチャネル/セッションが予期せず尽きた合図。
+                            // 転送層の切断・サーバ側 disconnect・キープアライブ timeout などで起きる。
+                            // 切断の切り分けができるよう既定レベル(warn)で残す。russh 自身の理由は
+                            // RUST_LOG=russh=debug で併せて確認できる。
+                            log::warn!(
+                                "pane {id}: SSH セッションが予期せず終了 (channel.wait()=None)"
+                            );
+                            break;
+                        }
                         _ => {}
                     }
                 }
                 inp = input_rx.recv() => {
                     match inp {
                         Some(PaneInput::Data(bytes)) => {
-                            if channel.data(&bytes[..]).await.is_err() {
+                            if let Err(e) = channel.data(&bytes[..]).await {
+                                log::warn!("pane {id}: 入力送信に失敗しチャネル終了: {e}");
                                 break;
                             }
                         }

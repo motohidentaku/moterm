@@ -13,7 +13,28 @@ use std::path::PathBuf;
 use winit::event_loop::EventLoop;
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    // ログは既定で stderr へ出す。ただし Windows は GUI サブシステム
+    // (`windows_subsystem = "windows"`) でコンソールを持たないため stderr が失われる。
+    // 診断用に MOTERM_LOG_FILE=<path> を指定するとそのファイルへ追記出力する。
+    // レベルは従来どおり RUST_LOG（既定 warn）で制御。例: RUST_LOG=info,russh=debug
+    {
+        let mut builder =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"));
+        if let Ok(path) = std::env::var("MOTERM_LOG_FILE") {
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    builder.target(env_logger::Target::Pipe(Box::new(file)));
+                }
+                Err(e) => eprintln!("MOTERM_LOG_FILE を開けません ({path}): {e}"),
+            }
+        }
+        builder.init();
+    }
+    log::info!("moterm 起動");
 
     let mut args = std::env::args().skip(1);
     let mut config_path: Option<PathBuf> = None;

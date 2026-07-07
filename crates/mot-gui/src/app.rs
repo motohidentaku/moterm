@@ -634,7 +634,19 @@ impl App {
                 while let Ok(ev) = pane.handle.events.try_recv() {
                     match ev {
                         PaneEvent::Output(data) => {
-                            pane.terminal.feed(&data);
+                            // 堅牢化: パーサ/スクリーンの想定外 panic で GUI スレッドごと
+                            // 巻き戻り、全 SSH セッションが道連れで落ちるのを防ぐ。万一 panic
+                            // したらそのチャンクを捨てて継続する（1ペインの表示乱れに留める）。
+                            let term = &mut pane.terminal;
+                            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                term.feed(&data)
+                            }))
+                            .is_err()
+                            {
+                                log::warn!(
+                                    "terminal feed panicked (pane {pane_id}); chunk を破棄して継続"
+                                );
+                            }
                             got = true;
                         }
                         PaneEvent::Exited(status) => {

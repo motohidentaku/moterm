@@ -1450,9 +1450,14 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
+        // `%XX`（XX は ASCII 16進2桁）だけをデコードする。ここで str スライス
+        // `&s[i+1..i+3]` を使うと、`%` の直後がマルチバイト文字だと char 境界外スライスで
+        // panic する（例: OSC 7 の cwd 通知 `file://h/%<多バイト>`）。バイトから直接読む。
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
                 i += 3;
                 continue;
             }

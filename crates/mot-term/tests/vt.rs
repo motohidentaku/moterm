@@ -122,6 +122,10 @@ fn osc_title_cwd_hyperlink_osc52() {
     assert_eq!(t.screen.title, "my-title");
     t.feed(b"\x1b]7;file://host/home/user%20x\x1b\\");
     assert_eq!(t.screen.remote_cwd.as_deref(), Some("/home/user x"));
+    // 回帰: `%` の直後がマルチバイト文字だと percent_decode が char 境界外スライスで
+    // panic していた（OSC 7 の cwd 通知経由でアプリ全体を巻き添えにし得た）。
+    t.feed("\x1b]7;file://host/tmp/%あ\x1b\\".as_bytes());
+    assert_eq!(t.screen.remote_cwd.as_deref(), Some("/tmp/%あ"));
     // OSC 8 ハイパーリンク
     t.feed(b"\x1b]8;;https://example.com\x1b\\LINK\x1b]8;;\x1b\\plain");
     let line = t.screen.view_line(0, 0);
