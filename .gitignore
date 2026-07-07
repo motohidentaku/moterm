@@ -1,0 +1,19 @@
+# Rust / cargo
+/target/
+**/*.rs.bk
+
+# 検証マーカー（ランタイム状態。共有しない）
+.moterm-check/
+
+# GUI/SSH E2E で生成するスクリーンショット（再生成可能）
+artifacts/
+
+# 他スタックの残骸
+__pycache__/
+node_modules/
+.venv/
+.pytest_cache/
+
+# エディタ / OS
+*.swp
+.DS_Store

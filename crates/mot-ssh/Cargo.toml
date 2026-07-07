@@ -1,0 +1,19 @@
+[package]
+name = "mot-ssh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "russh ベースの SSH セッション層（認証・TOFU・PTY・PF・SFTP・再接続・ログ）"
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+russh = "0.52"
+russh-sftp = "2"
+mot-core = { path = "../mot-core" }
+mot-term = { path = "../mot-term" }
+
+[dev-dependencies]
+env_logger = { workspace = true }

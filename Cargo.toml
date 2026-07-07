@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mot-term",
+    "crates/mot-core",
+    "crates/mot-ssh",
+    "crates/mot-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+unicode-width = "0.2"
+base64 = "0.22"
+dirs = "6"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+# 配布バイナリの軽量化: デバッグシンボル除去＋単一 codegen ユニット。
+strip = true
+codegen-units = 1
+
+# デバッグビルドでも描画・暗号がまともな速度で動くように
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

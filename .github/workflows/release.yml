@@ -1,0 +1,86 @@
+name: release
+
+# v で始まるタグ（例: v0.1.0）を push すると発火し、各 OS のバイナリをビルドして
+# GitHub Release（下書き・プレリリース）を作成し、成果物を添付する。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # Release の作成・アセット添付に必要
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+          - os: macos-latest
+            name: macos-arm64
+          - os: ubuntu-latest
+            name: linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Linux は winit/softbuffer 向けの X11/Wayland ビルド依存を入れる。
+      - name: Install Linux build deps
+        if: matrix.name == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev
+
+      - name: Build & package
+        shell: bash
+        run: |
+          set -eu
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          case "${{ matrix.name }}" in
+            windows-x64)
+              cargo build --release -p mot-gui
+              cp target/release/moterm.exe "dist/moterm-${TAG}-windows-x64.exe"
+              ;;
+            macos-arm64)
+              # scripts/macos-bundle.sh が cargo build --release を実行し dist/moterm.app を生成する。
+              bash scripts/macos-bundle.sh
+              ( cd dist && zip -qr "moterm-${TAG}-macos-arm64.zip" moterm.app )
+              rm -rf dist/moterm.app
+              ;;
+            linux-x64)
+              cargo build --release -p mot-gui
+              tar -C target/release -czf "dist/moterm-${TAG}-linux-x64.tar.gz" moterm
+              ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: create release (draft)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: true
+          generate_release_notes: true
+          files: dist/*

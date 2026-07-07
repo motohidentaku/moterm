@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# moterm の統一検証エントリポイント（lint + typecheck + test）。
+# スタック（Node / Python / Rust / Go）を自動検出して各ツールへ委譲する。
+# 新しいスタックを追加するときは detect / lint / test / fix の4箇所を必ず更新すること。
+#
+# 使い方:
+#   ./check          lint + test（完了条件。成功時に検証マーカーを更新）
+#   ./check lint     lint / typecheck のみ
+#   ./check test     テストのみ
+#   ./check fix      自動修正（format 等）
+#   ./check detect   検出されたスタックの表示
+set -u
+cd "$(dirname "$0")"
+
+has_node()   { [ -f package.json ]; }
+has_python() { [ -f pyproject.toml ] || [ -f setup.py ] || [ -f requirements.txt ] || ls ./*.py >/dev/null 2>&1; }
+has_rust()   { [ -f Cargo.toml ]; }
+has_go()     { [ -f go.mod ]; }
+
+# このホストにはツールチェーンが無いため、cargo は Docker 内で実行する（docker/run.sh 参照）
+cargo() { ./docker/run.sh cargo "$@"; }
+
+FAILED=0
+run() { echo "+ $*"; "$@" || FAILED=1; }
+
+detect() {
+  echo "node:   $(has_node && echo yes || echo no)"
+  echo "python: $(has_python && echo yes || echo no)"
+  echo "rust:   $(has_rust && echo yes || echo no)"
+  echo "go:     $(has_go && echo yes || echo no)"
+}
+
+lint() {
+  if has_node; then
+    [ -f node_modules/.bin/eslint ] && run npx eslint .
+    if grep -q '"typecheck"' package.json 2>/dev/null; then run npm run typecheck
+    elif [ -f tsconfig.json ]; then run npx tsc --noEmit; fi
+  fi
+  if has_python; then
+    if command -v ruff >/dev/null 2>&1; then run ruff check .
+    else echo "(ruff 未導入: pip install ruff を推奨。py_compile で構文のみ確認)"
+         for f in $(find . -name '*.py' -not -path './.venv/*' -not -path './node_modules/*'); do
+           run python3 -m py_compile "$f"
+         done
+    fi
+    command -v mypy >/dev/null 2>&1 && run mypy .
+  fi
+  if has_rust; then run cargo clippy --workspace --all-targets -- -D warnings; run cargo fmt --check; fi
+  if has_go; then
+    run go vet ./...
+    UNFMT=$(gofmt -l . 2>/dev/null); [ -n "$UNFMT" ] && { echo "gofmt 未整形: $UNFMT"; FAILED=1; }
+  fi
+  return 0
+}
+
+test_() {
+  if has_node; then
+    if grep -q '"test"' package.json 2>/dev/null; then run npm test --silent
+    else echo "(node: test script なし)"; fi
+  fi
+  if has_python; then
+    if command -v pytest >/dev/null 2>&1; then
+      echo "+ pytest -q"
+      pytest -q; rc=$?
+      # exit 5 = テスト0件。テスト未整備の初期段階では失敗扱いにしない
+      [ "$rc" -ne 0 ] && [ "$rc" -ne 5 ] && FAILED=1
+    else echo "(pytest 未導入: pip install pytest を推奨)"; fi
+  fi
+  has_rust && run cargo test --workspace --quiet
+  has_go && run go test ./...
+  return 0
+}
+
+fix() {
+  if has_node; then
+    [ -f node_modules/.bin/prettier ] && run npx prettier --write .
+    [ -f node_modules/.bin/eslint ] && npx eslint --fix . || true
+  fi
+  if has_python && command -v ruff >/dev/null 2>&1; then run ruff check --fix .; run ruff format .; fi
+  has_rust && run cargo fmt
+  has_go && run gofmt -w .
+  return 0
+}
+
+case "${1:-check}" in
+  detect) detect ;;
+  lint)   lint ;;
+  test)   test_ ;;
+  fix)    fix ;;
+  check)
+    lint
+    test_
+    if [ "$FAILED" -eq 0 ]; then
+      # 成功時にマーカーを更新（再検証の要否判定に使うランタイム状態）
+      mkdir -p .moterm-check && touch .moterm-check/last
+      echo "== ./check: OK =="
+    else
+      echo "== ./check: FAILED ==" >&2
+    fi
+    ;;
+  *) echo "usage: ./check [check|lint|test|fix|detect]" >&2; exit 64 ;;
+esac
+exit "$FAILED"

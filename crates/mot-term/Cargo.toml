@@ -1,0 +1,11 @@
+[package]
+name = "mot-term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "VT エスケープシーケンスパーサ＋端末スクリーンモデル（ゼロ実装）"
+
+[dependencies]
+unicode-width = { workspace = true }
+base64 = { workspace = true }
+log = { workspace = true }
