@@ -339,8 +339,13 @@ impl App {
     /// NEO-UI: アクティブタブのフォーカスペインを端末領域（ヘッダ分を除く）へリサイズ。
     fn relayout_neo(&mut self, lay: &NeoLayout) {
         let m = self.cell_metrics();
-        let cw = lay.terminal.w.max(1);
-        let ch = (lay.terminal.h - lay.term_header()).max(1);
+        // 桁/行は「実際に本文を描く可視領域」から算出する。draw_terminal/draw_screen は
+        // 左に si(6) の余白、右に si(12) のスクロールバー、上に +2 のインセットを取るため、
+        // それらを差し引く。全幅/全高から出すと報告サイズが可視領域より大きくなり、
+        // 全画面アプリ(vim/htop/tmux)の最終列・行がスクロールバー下や画面外へはみ出して
+        // 「右端・下端に変な文字列」として見える（#表示崩れ）。
+        let cw = (lay.terminal.w - si(6.0, lay.scale) - si(12.0, lay.scale)).max(1);
+        let ch = (lay.terminal.h - lay.term_header() - 2).max(1);
         let cols = (cw / m.cw).max(1) as u16;
         let rows = (ch / m.ch).max(1) as u16;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {

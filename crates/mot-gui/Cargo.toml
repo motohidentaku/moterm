@@ -24,7 +24,7 @@ fontdb = "0.23"
 arboard = { version = "3", default-features = false }
 notify = "8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-russh = "0.52"
+russh = "0.59"
 # NEO-UI 描画基盤: 純Rust CPU 2Dラスタライザ（角丸/グラデ/グロー/α合成/AA）。
 # png-format は不要（スクショは image クレート）なので外して軽量化。
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }

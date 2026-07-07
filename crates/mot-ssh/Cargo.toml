@@ -10,8 +10,8 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
-russh = "0.52"
-russh-sftp = "2"
+russh = "0.59"
+russh-sftp = "2.3"
 mot-core = { path = "../mot-core" }
 mot-term = { path = "../mot-term" }
 

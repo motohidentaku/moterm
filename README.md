@@ -1,5 +1,7 @@
 # moterm
 
+[English](README.en.md) | **日本語**
+
 Rust による SSH 専用ターミナルクライアント。
 複数の環境へ SSH 接続して開発し、ローカルとの間でファイルをやり取りしつつ、Claude Code / Codex を扱う想定のアプリ。
 

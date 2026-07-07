@@ -88,9 +88,11 @@ async fn auth_agent(handle: &mut Handle<ClientHandler>, user: &str) -> Result<()
         .flatten()
         .flatten();
     for id in identities {
-        let hash = if id.algorithm().is_rsa() { best } else { None };
+        // 0.59 で request_identities() は AgentIdentity を返す。署名対象の公開鍵を取り出す。
+        let key = id.public_key().into_owned();
+        let hash = if key.algorithm().is_rsa() { best } else { None };
         match handle
-            .authenticate_publickey_with(user, id, hash, &mut agent)
+            .authenticate_publickey_with(user, key, hash, &mut agent)
             .await
         {
             Ok(AuthResult::Success) => return Ok(()),
