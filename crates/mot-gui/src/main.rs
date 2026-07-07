@@ -3,10 +3,11 @@
 //!   moterm [config.lua]              設定を指定して起動
 //!   moterm --screenshot <png> [cfg]  数フレーム描画後に PNG を保存して終了（検証用）
 
-// Windows: コンソール（コマンドプロンプト）ウィンドウを出さない GUI サブシステムで起動する。
-// これが無いと exe 起動時に黒いコンソールが一緒に開く。標準出力は失われるが、
-// ログは env_logger の対象で、GUI アプリとしては不要。
-#![cfg_attr(windows, windows_subsystem = "windows")]
+// Windows: リリースビルドのみ GUI サブシステムで起動し、コンソール窓を出さない
+// （配布時に黒いコンソールが一緒に開かないようにする）。
+// デバッグビルド(debug_assertions)はコンソール付きにして、env_logger のログ(stderr)を
+// その場のコンソールで確認できるようにする（診断用。レベルは RUST_LOG で制御）。
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use mot_gui::app::App;
 use std::path::PathBuf;
