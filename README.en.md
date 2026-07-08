@@ -88,11 +88,11 @@ config.groups = { { name = "prod", label = "Production" } }
 return config
 ```
 
-### Key bindings (F1–F5, tab switching, copy/paste — 14 actions remappable via `config.keys`)
+### Key bindings (F1–F5, tab switching, copy/paste — 15 actions remappable via `config.keys`)
 
 | Key | Action | Key | Action |
 |---|---|---|---|
-| F1 / Ctrl+T | Sidebar filter | F2 | Port-forward panel |
+| F1 | Sidebar filter (host search) | Ctrl+T | Sidebar select (↑↓, Enter to connect) |
 | F3 | SFTP file manager | F4 | Close tab |
 | F5 | Reconnect | Ctrl+PageUp/Dn | Switch tab |
 | Ctrl+Shift+C / V | Copy / paste | Ctrl+Shift+F | Scrollback search |
@@ -100,7 +100,7 @@ return config
 | Shift+PageUp/Dn | Scrollback | Ctrl+Shift+B | Broadcast input |
 | Ctrl+Shift+E / O | Split pane (horizontal / vertical) | Ctrl+Shift+X | Close pane |
 | Ctrl+Shift+Arrows | Move pane focus | Ctrl+1–9 / Ctrl+Tab | Switch tab |
-| Ctrl+Shift+P / N | Prev / next prompt (OSC 133) | | |
+| Ctrl+Shift+P / N | Prev / next prompt (OSC 133) | F2 | Port-forward panel |
 
 
 ## Development & testing

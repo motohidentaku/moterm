@@ -54,6 +54,8 @@ pub fn to_term_key(key: &WKey, text: Option<&str>) -> Option<TermKey> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuiAction {
     Launcher,
+    /// 左サイドバーのキーボード選択モードに入る（Ctrl+T）。
+    SidebarFocus,
     NewTab,
     NextTab,
     PrevTab,
@@ -113,6 +115,7 @@ pub fn to_keymap_key(term_key: &TermKey, mods: Mods) -> Option<(KeyName, ModMask
 pub fn action_to_gui(action: Action) -> GuiAction {
     match action {
         Action::Launcher => GuiAction::Launcher,
+        Action::SidebarFocus => GuiAction::SidebarFocus,
         Action::NewTab => GuiAction::NewTab,
         Action::NextTab => GuiAction::NextTab,
         Action::PrevTab => GuiAction::PrevTab,
@@ -154,7 +157,7 @@ pub fn fixed_shortcut(term_key: &TermKey, mods: Mods) -> Option<GuiAction> {
         TermKey::Tab if ctrl && !shift => Some(GuiAction::NextTab),
         TermKey::Tab if ctrl && shift => Some(GuiAction::PrevTab),
         TermKey::F(3) => Some(GuiAction::Sftp),
-        TermKey::Char('t') if ctrl && !shift => Some(GuiAction::Launcher),
+        TermKey::Char('t') if ctrl && !shift => Some(GuiAction::SidebarFocus),
         TermKey::Char(c) if ctrl && !shift && c.is_ascii_digit() && *c != '0' => {
             Some(GuiAction::TabIndex(*c as u8 - b'0'))
         }
@@ -198,7 +201,7 @@ pub fn terminal_shortcut(term_key: &TermKey, mods: Mods) -> Option<GuiAction> {
         TermKey::F(3) => Some(GuiAction::Sftp),
         TermKey::F(4) => Some(GuiAction::CloseTab),
         TermKey::F(5) => Some(GuiAction::Reconnect),
-        TermKey::Char('t') if ctrl && !shift => Some(GuiAction::Launcher),
+        TermKey::Char('t') if ctrl && !shift => Some(GuiAction::SidebarFocus),
         // Ctrl+1..=9
         TermKey::Char(c) if ctrl && !shift && c.is_ascii_digit() && *c != '0' => {
             Some(GuiAction::TabIndex(*c as u8 - b'0'))

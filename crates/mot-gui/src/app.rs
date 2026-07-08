@@ -284,6 +284,9 @@ pub struct App {
     master_show: bool,
     /// NEO-UI: サイドバーの Filter 入力にフォーカスがあるか（キーを query へ流す）。
     neo_filter_focus: bool,
+    /// NEO-UI: サイドバーのキーボード選択モード。Some(i) なら sidebar_rows の i 行目を選択中。
+    /// neo_filter_focus とは相互排他（どちらか一方のみ）。
+    neo_sidebar_sel: Option<usize>,
     /// 端末表示時のウィンドウサイズ（window.width/height、論理px）。
     term_size: (u32, u32),
     /// 直近にプログラムから適用したサイズ。手動リサイズと争わないための基準
@@ -380,6 +383,7 @@ impl App {
             neo_collapsed: std::collections::HashSet::new(),
             master_show: false,
             neo_filter_focus: false,
+            neo_sidebar_sel: None,
             term_size,
             applied_size: None,
         })

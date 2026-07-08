@@ -33,6 +33,11 @@ impl App {
             self.neo_filter_key(event);
             return;
         }
+        // サイドバーのキーボード選択モード中は ↑↓/Enter/Esc をそこで処理（端末へ漏らさない）。
+        if self.neo_sidebar_sel.is_some() {
+            self.neo_sidebar_nav_key(event);
+            return;
+        }
         // キーは接続タブの端末へ（GUI ショートカットも terminal_key 内で処理）。
         // SFTP は「アクティブタブの接続に紐づく時」だけ sftp_key へ。別タブでは端末へ。
         if self.mode == Mode::Sftp && self.fm_belongs_to_active() {
@@ -255,7 +260,16 @@ impl App {
     fn handle_gui_action(&mut self, action: GuiAction) {
         match action {
             // NEO-UI: ランチャー/新規タブは常設サイドバーの Filter へフォーカス（ホスト検索）。
-            GuiAction::Launcher | GuiAction::NewTab => self.neo_filter_focus = true,
+            // Filter とサイドバー選択は相互排他。
+            GuiAction::Launcher | GuiAction::NewTab => {
+                self.neo_filter_focus = true;
+                self.neo_sidebar_sel = None;
+            }
+            // Ctrl+T: サイドバーのキーボード選択モードに入る（先頭行を選択）。
+            GuiAction::SidebarFocus => {
+                self.neo_sidebar_sel = Some(0);
+                self.neo_filter_focus = false;
+            }
             GuiAction::CloseTab => self.close_active_tab(),
             GuiAction::NextTab => self.switch_tab(1),
             GuiAction::PrevTab => self.switch_tab(-1),

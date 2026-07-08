@@ -238,6 +238,7 @@ impl App {
         let sftp_view = self.mode == Mode::Sftp && self.fm_belongs_to_active();
         let lang = self.lang;
         let filter_focus = self.neo_filter_focus;
+        let sidebar_sel = self.neo_sidebar_sel;
         let broadcast = self.broadcast;
         let ime_preedit = self.ime_preedit.clone();
         // 検索ハイライト用に (マッチ範囲, カレント) を複製（self 分解前に借用を切る）。
@@ -263,7 +264,15 @@ impl App {
 
         let phase = anim_phase();
         draw_titlebar(fb, neo_fonts, &lay);
-        draw_sidebar(fb, neo_fonts, &lay, launcher, neo_collapsed, filter_focus);
+        draw_sidebar(
+            fb,
+            neo_fonts,
+            &lay,
+            launcher,
+            neo_collapsed,
+            filter_focus,
+            sidebar_sel,
+        );
         draw_tabstrip(
             fb,
             neo_fonts,
@@ -705,6 +714,61 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// サイドバーのキーボード選択モードのキー処理（Ctrl+T で開始）。
+    /// ↑↓ で行移動、Enter で接続（Host→その接続先 / Group→一括接続）、Esc で解除。
+    /// 行数はクエリ有無・折りたたみで変わるため、毎回 sidebar_rows を取り直して index をクランプする。
+    /// 選択モード中は上記以外のキーも消費し、端末へは渡さない（on_key 側で return）。
+    pub(super) fn neo_sidebar_nav_key(&mut self, event: &winit::event::KeyEvent) {
+        use winit::keyboard::{Key as WKey, NamedKey};
+        let lay = self.neo_layout();
+        let rows = sidebar_rows(
+            &self.launcher.model,
+            lay.sidebar,
+            &self.launcher.query,
+            &self.neo_collapsed,
+            lay.scale,
+        );
+        if rows.is_empty() {
+            // 行が無ければ Esc だけ受け付けて解除。
+            if matches!(event.logical_key, WKey::Named(NamedKey::Escape)) {
+                self.neo_sidebar_sel = None;
+            }
+            return;
+        }
+        let last = rows.len() - 1;
+        let cur = self.neo_sidebar_sel.unwrap_or(0).min(last);
+        match &event.logical_key {
+            WKey::Named(NamedKey::Escape) => {
+                self.neo_sidebar_sel = None;
+            }
+            WKey::Named(NamedKey::ArrowUp) => {
+                self.neo_sidebar_sel = Some(cur.saturating_sub(1));
+            }
+            WKey::Named(NamedKey::ArrowDown) => {
+                self.neo_sidebar_sel = Some((cur + 1).min(last));
+            }
+            WKey::Named(NamedKey::Enter) => {
+                // rows は self を不変借用しているため、接続対象を先に owned へ取り出してから
+                // self を可変借用する（connect_profile / neo_connect_group は &mut self）。
+                enum Nav {
+                    Host(Box<Profile>),
+                    Group(String),
+                }
+                let nav = match &rows[cur].row {
+                    NeoRow::Host { profile } => Nav::Host(profile.clone()),
+                    NeoRow::Group { name, .. } => Nav::Group(name.clone()),
+                };
+                self.neo_sidebar_sel = None;
+                match nav {
+                    Nav::Host(p) => self.connect_profile(*p),
+                    Nav::Group(g) => self.neo_connect_group(&g),
+                }
+            }
+            // 選択モード中は他キーも消費（何もしない）。
+            _ => {}
         }
     }
 
@@ -1753,6 +1817,7 @@ fn draw_sidebar(
     launcher: &LauncherState,
     collapsed: &std::collections::HashSet<String>,
     filter_focus: bool,
+    sidebar_sel: Option<usize>,
 ) {
     let sc = lay.scale;
     let s = lay.sidebar;
@@ -1810,8 +1875,25 @@ fn draw_sidebar(
 
     // グループ＋ホスト（共有レイアウト）
     let rows = sidebar_rows(&launcher.model, s, &launcher.query, collapsed, sc);
-    for pr in &rows {
+    // 選択モードのカーソル行（行数変動に備えクランプ）。
+    let sel = sidebar_sel
+        .filter(|_| !rows.is_empty())
+        .map(|i| i.min(rows.len() - 1));
+    for (i, pr) in rows.iter().enumerate() {
         let y = pr.y;
+        // キーボード選択中の行に淡いシアンの背景ハイライトを敷く。
+        if Some(i) == sel {
+            neo::fill_round_rect(
+                fb,
+                s.x + si(4.0, sc),
+                pr.y - si(1.0, sc),
+                s.w - si(8.0, sc),
+                pr.h,
+                4.0 * sc,
+                nc::CYAN,
+                0.12,
+            );
+        }
         match &pr.row {
             NeoRow::Group { name, label, count } => {
                 nf.draw_icon(

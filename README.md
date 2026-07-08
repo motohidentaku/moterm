@@ -77,11 +77,11 @@ config.groups = { { name = "prod", label = "本番環境" } }
 return config
 ```
 
-### 主なキー操作（F1〜F5・タブ切替・コピペ等の14アクションは `config.keys` で変更可）
+### 主なキー操作（F1〜F5・タブ切替・コピペ等の15アクションは `config.keys` で変更可）
 
 | キー | 動作 | キー | 動作 |
 |---|---|---|---|
-| F1 / Ctrl+T | サイドバー Filter | F2 | ポートフォワードパネル |
+| F1 | サイドバー Filter（ホスト検索） | Ctrl+T | サイドバー選択（↑↓移動・Enter で接続） |
 | F3 | SFTP ファイルマネージャ | F4 | タブを閉じる |
 | F5 | 再接続 | Ctrl+PageUp/Dn | タブ切替 |
 | Ctrl+Shift+C / V | コピー / 貼り付け | Ctrl+Shift+F | スクロールバック検索 |
@@ -89,7 +89,7 @@ return config
 | Shift+PageUp/Dn | スクロールバック | Ctrl+Shift+B | ブロードキャスト入力 |
 | Ctrl+Shift+E / O | ペイン分割（横 / 縦） | Ctrl+Shift+X | ペインを閉じる |
 | Ctrl+Shift+矢印 | ペインフォーカス移動 | Ctrl+1〜9 / Ctrl+Tab | タブ切替 |
-| Ctrl+Shift+P / N | 前 / 次のプロンプトへ（OSC 133） | | |
+| Ctrl+Shift+P / N | 前 / 次のプロンプトへ（OSC 133） | F2 | ポートフォワードパネル |
 
 
 ## 開発・テスト

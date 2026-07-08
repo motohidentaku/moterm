@@ -8,6 +8,8 @@ use crate::model::KeyBinding;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     Launcher,
+    /// 左サイドバーのキーボード選択モードに入る（↑↓移動 / Enter 接続 / Esc 解除）。
+    SidebarFocus,
     NewTab,
     NextTab,
     PrevTab,
@@ -122,6 +124,7 @@ pub fn parse_mods(s: &str) -> Option<ModMask> {
 pub fn parse_action(s: &str) -> Option<Action> {
     match s.trim().to_ascii_lowercase().as_str() {
         "launcher" => Some(Action::Launcher),
+        "sidebar_focus" => Some(Action::SidebarFocus),
         "new_tab" => Some(Action::NewTab),
         "next_tab" => Some(Action::NextTab),
         "prev_tab" => Some(Action::PrevTab),
@@ -161,7 +164,7 @@ impl Default for Keymap {
         use KeyName::*;
         let map = HashMap::from([
             ((F(1), ModMask::NONE), Launcher),
-            ((Char('t'), ModMask::CTRL), Launcher),
+            ((Char('t'), ModMask::CTRL), SidebarFocus),
             ((F(4), ModMask::NONE), CloseTab),
             ((F(5), ModMask::NONE), Reconnect),
             ((F(2), ModMask::NONE), PfPanel),
@@ -278,7 +281,7 @@ mod tests {
         );
         assert_eq!(
             km.lookup(KeyName::Char('t'), ModMask::CTRL),
-            Some(Action::Launcher)
+            Some(Action::SidebarFocus)
         );
         assert_eq!(
             km.lookup(KeyName::F(4), ModMask::NONE),
