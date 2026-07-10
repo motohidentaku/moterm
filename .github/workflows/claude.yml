@@ -1,0 +1,32 @@
+name: Claude
+
+# issue の作成、または issue コメントに「@claude」と書くと発火する。
+# 認証は Anthropic API の従量課金ではなく、Pro/Max サブスクの OAuth トークン
+# （Secret: CLAUDE_CODE_OAUTH_TOKEN）を使う。
+#
+# 事前準備（リポジトリ管理者の手作業・ローカル端末で実施）:
+#   1. `claude setup-token` でトークンを発行（Pro/Max 契約者のみ）
+#   2. `gh secret set CLAUDE_CODE_OAUTH_TOKEN` で Secret 登録
+#   3. GitHub App を対象リポジトリにインストール（/install-github-app）
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  claude:
+    # 「@claude」を含むときだけ起動し、無駄なサブスク消費を防ぐ。
+    if: contains(github.event.issue.body, '@claude') || contains(github.event.comment.body, '@claude')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

@@ -63,9 +63,19 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 rm -rf "$WORK"
-echo "生成: $APP （Dock アイコンは assets/icon.png 由来）"
 
-# 4) 任意の配置先
+# 4) ad-hoc 署名
+# 未署名の .app を quarantine 付き（ブラウザ DL）で開くと、Apple Silicon では
+# 「壊れているため開けません」と表示される。ad-hoc 署名（-s -）を付けると
+# この表示は解消する。ただし正式な公証ではないため、初回は右クリック→開く、
+# もしくは `xattr -dr com.apple.quarantine moterm.app` が必要（README 参照）。
+echo "codesign --force --deep --sign - $APP"
+codesign --force --deep --options runtime --sign - "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
+
+echo "生成: $APP （Dock アイコンは assets/icon.png 由来 / ad-hoc 署名済み）"
+
+# 5) 任意の配置先
 if [[ $# -ge 1 ]]; then
   DEST="$1"
   mkdir -p "$DEST"

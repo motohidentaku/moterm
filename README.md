@@ -58,6 +58,18 @@ moterm                    # 設定を自動探索して起動（無ければ既�
 moterm path/to/moterm.lua # 設定ファイルを明示
 ```
 
+### macOS で「壊れているため開けません」と出る場合
+
+Release の zip をブラウザで DL すると quarantine 属性が付き、Apple Silicon では未署名/ad-hoc
+署名の `.app` が「壊れているため開けません」と表示されることがある。次のいずれかで解消する:
+
+```sh
+xattr -dr com.apple.quarantine /path/to/moterm.app   # quarantine を除去して開く
+# もしくは Finder で .app を右クリック →「開く」→「開く」
+```
+
+正式な公証（Developer ID + notarization）は未対応のため、初回のみ上記の操作が必要。
+
 設定ファイル `moterm.lua` の探索順: ①引数で指定したパス → ②実行ファイルと同じディレクトリ →
 ③ `~/.config/moterm/`（Windows は `%APPDATA%\moterm\`）。`profiles.json`・暗号ボールトも同じ場所に置かれる。
 
