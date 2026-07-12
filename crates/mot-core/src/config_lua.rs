@@ -36,7 +36,25 @@ pub fn default_config_dir() -> PathBuf {
         .join("moterm")
 }
 
-/// moterm.lua の探索。優先順: 引数パス > 実行ファイルと同じディレクトリ > ユーザ既定の場所。
+/// macOS の `.app` バンドル内 exe（`Foo.app/Contents/MacOS/exe`）なら、
+/// バンドルを含むフォルダ（`Foo.app` の隣）を返す。それ以外は None。
+/// 素のバイナリ時代は「バイナリの隣＝moterm.lua」で成立していたが、.app 化で
+/// exe が3階層潜るため「.app の隣」を明示的に探索対象へ含める必要がある。
+fn app_bundle_sibling_dir(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?; // Foo.app/Contents/MacOS
+    let contents = macos.parent()?; // Foo.app/Contents
+    let bundle = contents.parent()?; // Foo.app
+    if macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app"
+    {
+        return bundle.parent().map(Path::to_path_buf); // Foo.app を含むフォルダ
+    }
+    None
+}
+
+/// moterm.lua の探索。優先順: 引数パス → 実行ファイルと同じディレクトリ
+/// →（.app バンドルなら）バンドルの隣 → ユーザ既定の場所。
 /// 引数パスは存在確認せずそのまま返す（読めなければ `load_config` が Err にする）。
 pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
@@ -45,6 +63,13 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let p = dir.join(CONFIG_FILE);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        // macOS: `.app` の隣に置かれた moterm.lua も拾う（exe 隣接はバンドル内部を指すため）。
+        if let Some(sibling) = app_bundle_sibling_dir(&exe) {
+            let p = sibling.join(CONFIG_FILE);
             if p.is_file() {
                 return Some(p);
             }
@@ -234,5 +259,29 @@ mod tests {
         let path = dir.join("moterm.lua");
         assert_eq!(config_dir(Some(&path)), dir);
         assert_eq!(config_dir(None), default_config_dir());
+    }
+
+    #[test]
+    fn app_bundle_sibling_dir_resolves_folder_containing_app() {
+        // Foo.app/Contents/MacOS/moterm → Foo.app を含むフォルダ
+        let exe = Path::new("/Users/me/Apps/moterm.app/Contents/MacOS/moterm");
+        assert_eq!(
+            app_bundle_sibling_dir(exe),
+            Some(PathBuf::from("/Users/me/Apps"))
+        );
+    }
+
+    #[test]
+    fn app_bundle_sibling_dir_none_for_plain_binary() {
+        // 素のバイナリ（.app でない）は None
+        assert_eq!(
+            app_bundle_sibling_dir(Path::new("/usr/local/bin/moterm")),
+            None
+        );
+        // 階層は似ているが .app でない
+        assert_eq!(
+            app_bundle_sibling_dir(Path::new("/x/foo/Contents/MacOS/moterm")),
+            None
+        );
     }
 }
