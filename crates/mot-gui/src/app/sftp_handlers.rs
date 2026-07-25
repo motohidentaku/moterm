@@ -228,6 +228,12 @@ impl App {
                     fm.active_pane_mut().re_sort();
                 }
             }
+            // Space: アクティブペインの選択ファイルのマークをトグルして下へ（複数選択）
+            WKey::Named(NamedKey::Space) => {
+                if let Some(fm) = self.fm.as_mut() {
+                    fm.active_pane_mut().toggle_mark_sel();
+                }
+            }
             // m: ミラー同期（アクティブ→反対ペイン。差分ファイルを一括転送）
             WKey::Character(s) if s.as_str() == "m" => self.fm_begin_mirror(),
             // d: ローカルのドライブ切替（Windows のみ。ドライブが無ければ何もしない）
@@ -277,8 +283,9 @@ impl App {
                 }
             }
         } else {
-            // ファイル → 反対ペインへ転送（上書き確認）
-            self.fm_request_transfer(active, sel.name);
+            // ファイル → 反対ペインへ転送（マークがあれば全マーク、無ければこの1件）
+            let names = fm.active_pane().action_targets();
+            self.fm_request_transfer_many(active, names);
         }
     }
 
@@ -391,6 +398,70 @@ impl App {
             }
         } else {
             self.fm_do_transfer(from, name);
+        }
+    }
+
+    /// 複数ファイルの転送要求。1件なら単発（従来の上書き確認）に委譲、
+    /// 複数なら宛先の既存件数を数え、あれば1回だけまとめて上書き確認する。
+    pub(super) fn fm_request_transfer_many(&mut self, from: Side, names: Vec<String>) {
+        match names.len() {
+            0 => {}
+            1 => self.fm_request_transfer(from, names.into_iter().next().unwrap()),
+            _ => {
+                let (_from, to) = transfer_dir(from);
+                let existing = self.fm_count_existing(to, &names);
+                if existing > 0 {
+                    let msg = format!(
+                        "{} {} file(s) ({} exist)",
+                        tr(self.lang, "overwrite_confirm"),
+                        names.len(),
+                        existing
+                    );
+                    if let Some(fm) = self.fm.as_mut() {
+                        fm.confirm = Some(FmConfirm {
+                            message: msg,
+                            action: PendingAction::TransferMany { from, names },
+                        });
+                    }
+                } else {
+                    self.fm_spawn_transfer(from, names);
+                }
+            }
+        }
+    }
+
+    /// 転送先 side の cwd に names のうち何件が既に存在するか（上書き確認用）。
+    /// リモートは SFTP セッションを1回だけ開いてまとめて調べる。
+    fn fm_count_existing(&self, to: Side, names: &[String]) -> usize {
+        let Some(fm) = self.fm.as_ref() else {
+            return 0;
+        };
+        match to {
+            Side::Local => {
+                let base = PathBuf::from(&fm.local.cwd);
+                names.iter().filter(|n| base.join(n).exists()).count()
+            }
+            Side::Remote => {
+                let cwd = fm.remote.cwd.clone();
+                let Some(session) = self.active_session() else {
+                    return 0;
+                };
+                let names: Vec<String> = names.to_vec();
+                self.connector
+                    .runtime()
+                    .block_on(async move {
+                        let sftp = session.open_sftp().await.ok()?;
+                        let mut count = 0usize;
+                        for n in &names {
+                            let path = crate::sftpview::remote_join(&cwd, n);
+                            if sftp.exists(&path).await.unwrap_or(false) {
+                                count += 1;
+                            }
+                        }
+                        Some(count)
+                    })
+                    .unwrap_or(0)
+            }
         }
     }
 
@@ -511,6 +582,10 @@ impl App {
         if self.fm.is_none() {
             return;
         }
+        // 転送元のマークは用済み（宛先は下で再読込＝set_listing でクリアされる）。
+        if let Some(fm) = self.fm.as_mut() {
+            fm.pane_mut(from).clear_marks();
+        }
         match other_side(from) {
             Side::Local => self.fm_reload_local(),
             Side::Remote => self.fm_reload_remote(false),
@@ -555,6 +630,22 @@ impl App {
     pub(super) fn fm_begin_delete(&mut self) {
         let Some(fm) = self.fm.as_ref() else { return };
         let side = fm.active;
+        // マークがあれば一括削除（ファイルのみ。1件でもマークを優先＝転送と対称）。
+        // 無ければ選択1件（ディレクトリ可）。
+        let marked = fm.active_pane().marked_names();
+        if !marked.is_empty() {
+            let msg = format!("{} {} file(s)?", tr(self.lang, "delete"), marked.len());
+            if let Some(f) = self.fm.as_mut() {
+                f.confirm = Some(FmConfirm {
+                    message: msg,
+                    action: PendingAction::DeleteMany {
+                        side,
+                        names: marked,
+                    },
+                });
+            }
+            return;
+        }
         let Some(sel) = fm.active_pane().selected() else {
             return;
         };
@@ -637,6 +728,12 @@ impl App {
                 Some(PendingAction::Transfer { from, name }) => self.fm_do_transfer(from, name),
                 Some(PendingAction::Delete { side, name, is_dir }) => {
                     self.fm_do_delete(side, name, is_dir)
+                }
+                Some(PendingAction::TransferMany { from, names }) => {
+                    self.fm_spawn_transfer(from, names)
+                }
+                Some(PendingAction::DeleteMany { side, names }) => {
+                    self.fm_do_delete_many(side, names)
                 }
                 Some(PendingAction::Mirror { from, names }) => self.fm_do_mirror(from, names),
                 None => {}
@@ -787,6 +884,52 @@ impl App {
                 }
             }
         }
+    }
+
+    /// マークされた複数ファイルを一括削除する（ファイルのみ）。
+    /// 成否をまとめてステータスに出し、宛先ペインを再読込（マークもクリアされる）。
+    fn fm_do_delete_many(&mut self, side: Side, names: Vec<String>) {
+        let Some(fm) = self.fm.as_ref() else { return };
+        let total = names.len();
+        let failed = match side {
+            Side::Local => {
+                let base = PathBuf::from(&fm.local.cwd);
+                names
+                    .iter()
+                    .filter(|n| std::fs::remove_file(base.join(n)).is_err())
+                    .count()
+            }
+            Side::Remote => {
+                let cwd = fm.remote.cwd.clone();
+                let Some(session) = self.active_session() else {
+                    return;
+                };
+                self.connector.runtime().block_on(async move {
+                    let sftp = match session.open_sftp().await {
+                        Ok(s) => s,
+                        Err(_) => return total, // 全失敗扱い
+                    };
+                    let mut failed = 0usize;
+                    for n in &names {
+                        let path = crate::sftpview::remote_join(&cwd, n);
+                        if sftp.remove_file(&path).await.is_err() {
+                            failed += 1;
+                        }
+                    }
+                    failed
+                })
+            }
+        };
+        match side {
+            Side::Local => self.fm_reload_local(),
+            Side::Remote => self.fm_reload_remote(false),
+        }
+        let msg = if failed == 0 {
+            format!("{total} deleted")
+        } else {
+            format!("{}/{total} deleted ({failed} failed)", total - failed)
+        };
+        self.fm_set_status(&msg);
     }
 
     fn fm_set_status(&mut self, s: &str) {

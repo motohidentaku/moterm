@@ -1549,20 +1549,16 @@ impl App {
     }
 
     /// 指定ペインの選択を反対側へ転送（Upload=Local, Download=Remote）。
+    /// マークがあれば全マーク、無ければ現在の選択1件。
     fn neo_sftp_transfer(&mut self, from: crate::sftpview::Side) {
-        let name = {
+        let names = {
             let Some(fm) = self.fm.as_mut() else {
                 return;
             };
             fm.active = from;
-            fm.pane(from)
-                .selected()
-                .filter(|e| !e.parent)
-                .map(|e| e.name.clone())
+            fm.pane(from).action_targets()
         };
-        if let Some(name) = name {
-            self.fm_request_transfer(from, name);
-        }
+        self.fm_request_transfer_many(from, names);
     }
 
     /// ペインのクリック（列見出し=ソート / 行=選択、選択済みディレクトリ再クリックで移動）。
@@ -1597,6 +1593,15 @@ impl App {
                 }
             }
             FmHit::Row(idx) => {
+                // Ctrl+クリックはマークのトグル（ファイルのみ・移動や open はしない）。
+                if self.mods.control_key() {
+                    if let Some(fm) = self.fm.as_mut() {
+                        fm.active = side;
+                        fm.pane_mut(side).sel = idx;
+                        fm.pane_mut(side).toggle_mark_at(idx);
+                    }
+                    return;
+                }
                 let (already, is_dir) = {
                     let Some(fm) = self.fm.as_ref() else {
                         return;
@@ -2500,12 +2505,18 @@ fn draw_neo_pane(
         10.0 * scale,
         blend(bg, accent, 0.75),
     );
-    let items = pane
-        .entries
-        .iter()
-        .filter(|e| !e.parent)
-        .count()
-        .to_string();
+    let n_items = pane.entries.iter().filter(|e| !e.parent).count();
+    let n_marked = pane.marked.len();
+    let items = if n_marked > 0 {
+        format!("{n_marked} marked / {n_items}")
+    } else {
+        n_items.to_string()
+    };
+    let icol = if n_marked > 0 {
+        nc::AMBER
+    } else {
+        nc::TEXT_SUB
+    };
     let iw = nf.measure(Face::Mono, &items, 9.5 * scale);
     nf.draw(
         fb,
@@ -2514,7 +2525,7 @@ fn draw_neo_pane(
         x + w - iw - si(10.0, scale),
         base1,
         9.5 * scale,
-        nc::TEXT_SUB,
+        icol,
     );
 
     // 列見出し（クリックでソート、fm_hit と同じ x）
@@ -2602,6 +2613,17 @@ fn draw_neo_pane(
         }
         let e = &pane.entries[idx];
         let ry = list_top + row as i32 * lh;
+        let marked = pane.marked.contains(&e.name);
+        if marked {
+            // マーク行はアンバーで薄く塗り、左に太バーを出す（選択と別色で複数を可視化）。
+            fb.fill_rect(
+                x + si(4.0, scale),
+                ry,
+                w - si(8.0, scale),
+                lh,
+                blend(bg, nc::AMBER, 0.12),
+            );
+        }
         if idx == pane.sel {
             let a = if is_active { 0.14 } else { 0.06 };
             fb.fill_rect(
@@ -2613,10 +2635,15 @@ fn draw_neo_pane(
             );
             fb.fill_rect(x + si(2.0, scale), ry, si(2.0, scale).max(1), lh, accent);
         }
+        if marked {
+            fb.fill_rect(x + si(2.0, scale), ry, si(2.0, scale).max(1), lh, nc::AMBER);
+        }
         let (ic, iccol) = if e.parent {
             (icon::CORNER_UP, nc::TEXT_SUB)
         } else if e.is_dir {
             (icon::FOLDER, accent)
+        } else if marked {
+            (icon::FILE, nc::AMBER)
         } else {
             (icon::FILE, nc::TEXT_SUB)
         };
@@ -2633,6 +2660,8 @@ fn draw_neo_pane(
             nc::TEXT_SUB
         } else if e.is_dir {
             accent
+        } else if marked {
+            nc::AMBER
         } else if is_active {
             nc::TEXT
         } else {

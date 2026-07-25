@@ -85,6 +85,9 @@ pub struct PaneFm {
     pub sort_asc: bool,
     /// 現一覧に「..」を含めるか（再ソート時に維持するため保持）。
     pub has_parent: bool,
+    /// 複数選択でマークされたファイル名の集合（ファイルのみ。ディレクトリ/".." は入らない）。
+    /// ディレクトリ移動・再読込（set_listing）でクリアされる。
+    pub marked: std::collections::HashSet<String>,
 }
 
 impl PaneFm {
@@ -99,15 +102,18 @@ impl PaneFm {
             sort_key: SortKey::Name,
             sort_asc: true,
             has_parent: false,
+            marked: std::collections::HashSet::new(),
         }
     }
 
     /// 生の一覧を現在のソート指定でソートして「..」を先頭に付けてセットする。
+    /// 別ディレクトリ/再読込では複数選択マークはクリアする（古い名前を残さない）。
     pub fn set_listing(&mut self, raw: Vec<Entry>, include_parent: bool) {
         self.has_parent = include_parent;
         self.entries = sorted_listing(raw, include_parent, self.sort_key, self.sort_asc);
         self.sel = self.sel.min(self.entries.len().saturating_sub(1));
         self.scroll = 0;
+        self.marked.clear();
     }
 
     /// 列見出しクリック / s キーでソートを変更する。
@@ -146,6 +152,59 @@ impl PaneFm {
         let n = self.entries.len() as i32;
         self.sel = (self.sel as i32 + delta).clamp(0, n - 1) as usize;
     }
+
+    /// 現在の選択行のマークをトグルして1つ下へ進む（ファイルのみ対象）。
+    /// ディレクトリ・".." はマークできない（そのまま下へ進むだけ）。
+    pub fn toggle_mark_sel(&mut self) {
+        if let Some(e) = self.entries.get(self.sel) {
+            if !e.is_dir && !e.parent {
+                let name = e.name.clone();
+                if !self.marked.remove(&name) {
+                    self.marked.insert(name);
+                }
+            }
+        }
+        self.move_sel(1);
+    }
+
+    /// 指定インデックスのマークをトグルする（マウス Ctrl+クリック用。ファイルのみ）。
+    pub fn toggle_mark_at(&mut self, idx: usize) {
+        if let Some(e) = self.entries.get(idx) {
+            if !e.is_dir && !e.parent {
+                let name = e.name.clone();
+                if !self.marked.remove(&name) {
+                    self.marked.insert(name);
+                }
+            }
+        }
+    }
+
+    /// マークをすべて解除する。
+    pub fn clear_marks(&mut self) {
+        self.marked.clear();
+    }
+
+    /// マークされたファイル名を現在の表示順で返す（一覧に無いマークは無視）。
+    pub fn marked_names(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|e| self.marked.contains(&e.name))
+            .map(|e| e.name.clone())
+            .collect()
+    }
+
+    /// 転送/削除の対象名リスト。マークがあればそれ（表示順）、無ければ現在の選択1件
+    /// （".." は除外）。ディレクトリはマーク対象外なので、マーク時は常にファイルのみ。
+    pub fn action_targets(&self) -> Vec<String> {
+        let marked = self.marked_names();
+        if !marked.is_empty() {
+            return marked;
+        }
+        match self.selected() {
+            Some(e) if !e.parent => vec![e.name.clone()],
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// 入力プロンプト（新規フォルダ名 / リネーム）。
@@ -180,6 +239,10 @@ pub enum PendingAction {
         name: String,
         is_dir: bool,
     },
+    /// from 側の複数ファイル names を反対側へ一括転送（上書き確認後、サイレント上書き）
+    TransferMany { from: Side, names: Vec<String> },
+    /// side の複数ファイル names を一括削除（マーク削除。ファイルのみ）
+    DeleteMany { side: Side, names: Vec<String> },
     /// from 側（ソース）から反対側（宛先）へ names を一括ミラー転送（サイレント上書き）
     Mirror { from: Side, names: Vec<String> },
 }
@@ -1130,6 +1193,89 @@ mod tests {
         assert_eq!(fmt_size(1024), "1.0K");
         assert_eq!(fmt_size(1536), "1.5K");
         assert_eq!(fmt_size(1048576), "1.0M");
+    }
+
+    #[test]
+    fn toggle_mark_marks_files_advances_and_skips_dirs() {
+        let mut p = PaneFm::new(Side::Local, "/".into());
+        p.set_listing(
+            vec![
+                Entry::dir("sub"),
+                Entry::file("a.txt", 1),
+                Entry::file("b.txt", 2),
+            ],
+            true, // ".." 先頭
+        );
+        // 並びは: [".." , "sub", "a.txt", "b.txt"]
+        assert_eq!(p.sel, 0);
+        // ".." はマーク不可、そのまま下へ
+        p.toggle_mark_sel();
+        assert!(p.marked.is_empty());
+        assert_eq!(p.sel, 1);
+        // "sub"（ディレクトリ）もマーク不可
+        p.toggle_mark_sel();
+        assert!(p.marked.is_empty());
+        assert_eq!(p.sel, 2);
+        // "a.txt" をマーク→下へ
+        p.toggle_mark_sel();
+        assert_eq!(p.marked_names(), vec!["a.txt"]);
+        assert_eq!(p.sel, 3);
+        // "b.txt" をマーク→末尾でクランプ
+        p.toggle_mark_sel();
+        assert_eq!(p.marked_names(), vec!["a.txt", "b.txt"]);
+        assert_eq!(p.sel, 3);
+        // 再トグルで解除
+        p.sel = 2;
+        p.toggle_mark_sel();
+        assert_eq!(p.marked_names(), vec!["b.txt"]);
+    }
+
+    #[test]
+    fn action_targets_uses_marks_or_falls_back_to_selection() {
+        let mut p = PaneFm::new(Side::Local, "/".into());
+        p.set_listing(
+            vec![Entry::file("a.txt", 1), Entry::file("b.txt", 2)],
+            false,
+        );
+        // マーク無し→選択1件
+        p.sel = 1;
+        assert_eq!(p.action_targets(), vec!["b.txt"]);
+        // マークあり→表示順のマーク集合（選択は無視）
+        p.toggle_mark_at(0);
+        p.toggle_mark_at(1);
+        assert_eq!(p.action_targets(), vec!["a.txt", "b.txt"]);
+        // ".." 選択で未マークなら空
+        let mut q = PaneFm::new(Side::Local, "/sub".into());
+        q.set_listing(vec![Entry::file("x", 1)], true);
+        q.sel = 0; // ".."
+        assert!(q.action_targets().is_empty());
+    }
+
+    #[test]
+    fn set_listing_clears_marks() {
+        let mut p = PaneFm::new(Side::Local, "/".into());
+        p.set_listing(vec![Entry::file("a.txt", 1)], false);
+        p.toggle_mark_at(0);
+        assert_eq!(p.marked_names(), vec!["a.txt"]);
+        // 別ディレクトリの読み込みでマークは消える
+        p.set_listing(
+            vec![Entry::file("a.txt", 1), Entry::file("c.txt", 3)],
+            false,
+        );
+        assert!(p.marked.is_empty());
+        assert!(p.action_targets().is_empty() || p.action_targets() == vec!["a.txt"]);
+    }
+
+    #[test]
+    fn re_sort_keeps_marks() {
+        let mut p = PaneFm::new(Side::Local, "/".into());
+        p.set_listing(
+            vec![Entry::file("a.txt", 30), Entry::file("b.txt", 10)],
+            false,
+        );
+        p.toggle_mark_at(0); // "a.txt"
+        p.set_sort(SortKey::Size); // 再ソート（set_listing は呼ばれない）
+        assert_eq!(p.marked_names(), vec!["a.txt"]);
     }
 
     #[test]

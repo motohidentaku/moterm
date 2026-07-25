@@ -25,6 +25,24 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 
+/// 接続直後にリモートシェルへ流し込む OSC 7（現在ディレクトリ通知）インストール用の1行。
+/// bash / zsh 両対応。cd のたびに `\e]7;file://host/path\e\\` を送るフックを仕込み、
+/// 併せて即時に1回発火して現在地を通知する（SFTP がすぐ正しい場所で開くように）。
+/// - 既存の PROMPT_COMMAND / precmd は壊さず追記／追加する（多重登録も防ぐ）。
+/// - 先頭スペースは histignorespace 環境での履歴汚染を避けるため。
+/// - bash/zsh 以外（fish 等）ではエラーにならないよう `$BASH_VERSION`/`$ZSH_VERSION` で分岐。
+const OSC7_INSTALL_SNIPPET: &str = concat!(
+    " _moterm_osc7() { printf '\\033]7;file://%s%s\\033\\\\' \"${HOSTNAME:-$HOST}\" \"$PWD\"; };",
+    " if [ -n \"$ZSH_VERSION\" ]; then",
+    " autoload -Uz add-zsh-hook 2>/dev/null;",
+    " add-zsh-hook -d precmd _moterm_osc7 2>/dev/null;",
+    " add-zsh-hook precmd _moterm_osc7 2>/dev/null;",
+    " elif [ -n \"$BASH_VERSION\" ]; then",
+    " case \"$PROMPT_COMMAND\" in *_moterm_osc7*) ;;",
+    " *) PROMPT_COMMAND=\"_moterm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\";; esac;",
+    " fi; _moterm_osc7\n",
+);
+
 /// 1ペイン分の端末状態。
 pub struct PaneState {
     pub terminal: mot_term::Terminal,
@@ -583,6 +601,14 @@ impl App {
                         let was_reconnect = tab.reconnect_attempts > 0;
                         tab.reconnect_attempts = 0;
                         tab.reconnect_at = None;
+                        // OSC 7（現在ディレクトリ通知）のインストール用スニペットを送る。
+                        // これで SFTP のリモートペインがシェルのカレントディレクトリで開く。
+                        // on_connect より先に送り、リモートの PROMPT_COMMAND/precmd へ追従させる。
+                        if self.config.remote_cwd_osc7 {
+                            if let Some(p) = tab.panes.get_mut(&pid) {
+                                p.handle.write(OSC7_INSTALL_SNIPPET.as_bytes().to_vec());
+                            }
+                        }
                         // on_connect 自動入力（再接続時は on_connect_on_reconnect=true のときだけ）。
                         if let Some(profile) = &tab.profile {
                             let run = !was_reconnect || profile.on_connect_on_reconnect;

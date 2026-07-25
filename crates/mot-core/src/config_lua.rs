@@ -216,6 +216,14 @@ mod tests {
         assert_eq!(cfg.scrollback_lines, 1000);
         assert_eq!(cfg.secret_store, "encrypted-file");
         assert!(cfg.use_ime);
+        // OSC 7（SFTP のリモート初期パス通知）は既定 ON。
+        assert!(cfg.remote_cwd_osc7);
+    }
+
+    #[test]
+    fn remote_cwd_osc7_can_be_disabled() {
+        let cfg = eval_config("return { remote_cwd_osc7 = false }", "osc7.lua").unwrap();
+        assert!(!cfg.remote_cwd_osc7);
     }
 
     #[test]
