@@ -257,12 +257,6 @@ pub struct Config {
     /// UI テーマ: 'classic'(既定) | 'neo'（未来的3カラムUI）。
     #[serde(default)]
     pub ui: Option<String>,
-    /// 接続直後にリモートシェルへ OSC 7（現在ディレクトリ通知）のインストール用
-    /// スニペットを送り込むか（既定 true）。有効だと SFTP のリモートペインが
-    /// 「シェルのカレントディレクトリ」で開く。bash/zsh 以外や、シェル設定を
-    /// 汚したくない場合は false にする（その場合はリモートの rc で自前設定する）。
-    #[serde(default = "default_true")]
-    pub remote_cwd_osc7: bool,
 }
 
 fn default_font_size() -> f32 {
@@ -304,7 +298,6 @@ impl Default for Config {
             keys: Vec::new(),
             treat_east_asian_ambiguous_width_as_wide: false,
             ui: None,
-            remote_cwd_osc7: true,
         }
     }
 }

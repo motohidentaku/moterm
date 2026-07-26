@@ -6,9 +6,6 @@ config.font_size = 16.0
 config.color_scheme = 'Tokyo Night'
 config.scrollback_lines = 2000
 config.lang = 'ja'
--- 接続直後に OSC 7 を仕込み、SFTP のリモートペインをシェルのカレントディレクトリで開く（既定 true）。
--- bash/zsh 以外を使う・リモートのシェル設定を汚したくない場合は false にする。
-config.remote_cwd_osc7 = true
 
 config.profiles = {
   {
