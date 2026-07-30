@@ -21,6 +21,10 @@ pub enum SshError {
     PpkConvert(String),
     /// ポートフォワード確立失敗（required=true 時に接続失敗へ昇格）
     Forward(String),
+    /// proxy_command の起動・トランスポート確立失敗。
+    /// メッセージには展開後のコマンドと子プロセスの stderr 末尾を含める
+    /// （aws ssm 等は失敗理由を stderr にしか出さないため）。
+    ProxyCommand(String),
     Sftp(String),
     Russh(russh::Error),
     Other(String),
@@ -39,6 +43,7 @@ impl fmt::Display for SshError {
             SshError::KeyParse => write!(f, "鍵の読み込みに失敗しました"),
             SshError::PpkConvert(m) => write!(f, ".ppk 変換に失敗しました: {m}"),
             SshError::Forward(m) => write!(f, "ポートフォワード確立に失敗しました: {m}"),
+            SshError::ProxyCommand(m) => write!(f, "proxy_command の実行に失敗しました: {m}"),
             SshError::Sftp(m) => write!(f, "SFTP エラー: {m}"),
             SshError::Russh(e) => write!(f, "SSH エラー: {e}"),
             SshError::Other(m) => write!(f, "{m}"),
