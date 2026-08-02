@@ -220,7 +220,9 @@ pub struct MetricsCfg {
     /// 採取間隔（分）。0 なら採取しない。
     #[serde(default = "default_metrics_interval_min")]
     pub interval_min: u32,
-    /// 情報パネルの既定の表示状態
+    /// 右の情報パネルの既定の表示状態（F6 で切替）。
+    /// メトリクス以外（ホスト情報・エージェント・認証）も載るため、
+    /// `enabled = false` でもパネル自体はこの設定で出せる。
     #[serde(default = "default_true")]
     pub panel: bool,
 }

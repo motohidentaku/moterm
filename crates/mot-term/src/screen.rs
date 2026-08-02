@@ -17,6 +17,9 @@ pub enum TermEvent {
     Clipboard(String),
     /// OSC 7: リモートの現在ディレクトリ（file://host/path の path 部）
     Cwd(String),
+    /// OSC 7777: リモートの Claude Code から届いた状況（`<tmux-pane>;<json>`）。
+    /// 中身の解釈は mot-core::agent が行う（ここでは素通しする）。
+    Agent(String),
     Bell,
 }
 
@@ -997,6 +1000,8 @@ impl Screen {
                 }
             }
             "133" => self.handle_osc133(rest),
+            // moterm 独自: リモートの Claude Code の状況（statusLine / hooks 由来）。
+            "7777" => self.events.push_back(TermEvent::Agent(rest.to_string())),
             _ => {}
         }
     }

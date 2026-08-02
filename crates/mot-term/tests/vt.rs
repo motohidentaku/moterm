@@ -139,6 +139,26 @@ fn osc_title_cwd_hyperlink_osc52() {
     assert!(events.contains(&TermEvent::Clipboard("hello".into())));
 }
 
+/// OSC 7777（moterm 独自: リモートの Claude Code の状況）は中身を解釈せず素通しする。
+#[test]
+fn osc7777_agent_payload_passthrough() {
+    let mut t = Terminal::new(20, 3, 0);
+    // BEL 終端。JSON 内の ';' や '{}' をそのまま含んだまま届くこと。
+    t.feed(b"\x1b]7777;%3;{\"session_id\":\"s\",\"cwd\":\"/a;b\"}\x07");
+    let events = t.screen.take_events();
+    assert!(
+        events.contains(&TermEvent::Agent(
+            "%3;{\"session_id\":\"s\",\"cwd\":\"/a;b\"}".into()
+        )),
+        "events was: {events:?}"
+    );
+    // ST 終端でも同じ。画面には何も書かれないこと。
+    t.feed(b"\x1b]7777;-;{}\x1b\\");
+    let events = t.screen.take_events();
+    assert!(events.contains(&TermEvent::Agent("-;{}".into())));
+    assert_eq!(t.screen.view_line(0, 0)[0].ch, ' ');
+}
+
 #[test]
 fn bracketed_paste_and_key_encoding() {
     let mut t = Terminal::new(10, 3, 0);

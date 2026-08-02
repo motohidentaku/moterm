@@ -32,6 +32,9 @@ pub struct PaneState {
     pub scroll: usize,
     pub cols: u16,
     pub rows: u16,
+    /// このペインで動いている Claude Code の状況（OSC 7777 由来）。
+    /// tmux 越しだと1本の PTY に複数セッションが混ざるので session_id で分けて持つ。
+    pub agents: mot_core::agent::AgentSessions,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -322,7 +325,9 @@ impl App {
         let px = config.font_size.max(8.0);
         let keys_cfg = config.keys.clone();
         // config は後段で move されるため、先に値を取り出しておく。
-        let info_visible = config.metrics.enabled && config.metrics.panel;
+        // 情報パネルにはホスト情報・エージェント・認証も載るので、メトリクス採取を
+        // 止めていてもパネル自体は出す（panel だけで決める）。
+        let info_visible = config.metrics.panel;
 
         // プロファイル解決（lua + profiles.json マージ）
         let gui = mot_core::store::load_gui_profiles(&config_dir);
@@ -596,6 +601,7 @@ impl App {
                                 scroll: 0,
                                 cols,
                                 rows,
+                                agents: Default::default(),
                             },
                         );
                         tab.session = Some(session);
@@ -714,8 +720,17 @@ impl App {
                     }
                     // クリップボード等のイベントは take_events で消費（OSC52 等）
                     for tev in pane.terminal.screen.take_events() {
-                        if let mot_term::TermEvent::Clipboard(text) = tev {
-                            set_clipboard(&text);
+                        match tev {
+                            mot_term::TermEvent::Clipboard(text) => set_clipboard(&text),
+                            // OSC 7777: リモートの Claude Code の状況。
+                            // 解釈できないペイロードは捨てる（他端末向けの独自 OSC が
+                            // 紛れ込んでも害が出ないように）。
+                            mot_term::TermEvent::Agent(payload) => {
+                                if let Some(ev) = mot_core::agent::parse_agent_osc(&payload) {
+                                    pane.agents.apply(ev);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     if sb_drag_pid != Some(*pane_id) {

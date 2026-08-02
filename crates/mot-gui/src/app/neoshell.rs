@@ -12,6 +12,7 @@ use crate::neo::{self, color as nc};
 use crate::neofont::{icon, Face, NeoFonts};
 use crate::render::Framebuffer;
 use crate::theme::{blend, Pixel};
+use mot_core::agent::AgentState;
 
 /// UI スケールの基準フォントサイズ。config.font_size がこの値のとき scale=1.0。
 /// 端末本文（= font_size）より小さく取ることで、クローム文字を本文とほぼ同大まで
@@ -257,6 +258,7 @@ impl App {
         let selection = self.selection; // Copy
         let tab_rename = self.tab_rename.clone();
         let sftp_view = self.mode == Mode::Sftp && self.fm_belongs_to_active();
+        let metrics_enabled = self.config.metrics.interval().is_some();
         let lang = self.lang;
         let filter_focus = self.neo_filter_focus;
         let sidebar_sel = self.neo_sidebar_sel;
@@ -345,7 +347,7 @@ impl App {
             draw_broadcast_bar(fb, neo_fonts, &lay, scale);
         }
 
-        draw_info_panel(fb, neo_fonts, &lay, tabs.get(active_tab));
+        draw_info_panel(fb, neo_fonts, &lay, tabs.get(active_tab), metrics_enabled);
         draw_statusbar(fb, neo_fonts, &lay, tabs, active_tab, phase);
     }
 
@@ -1874,8 +1876,224 @@ fn human_kb(kb: u64) -> String {
     format!("{kb}K")
 }
 
+/// トークン数を短く（15500 → "15.5k"）。
+fn human_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+/// エージェントの状態に対応する色（Figma のステータス配色に合わせる）。
+fn agent_state_color(state: AgentState) -> Pixel {
+    match state {
+        AgentState::Working => nc::CYAN,
+        AgentState::Waiting => nc::AMBER,
+        AgentState::Idle => nc::TEXT_SUB,
+    }
+}
+
+/// 情報パネルの AGENT セクション。戻り値は次のセクションの開始 y。
+///
+/// tmux 越しでは 1 ペインに複数セッションが混ざるため、更新の新しい順に
+/// 数件だけ出し、残りは件数で示す。
+fn draw_agent_section(
+    fb: &mut Framebuffer,
+    nf: &mut NeoFonts,
+    x: i32,
+    mut y: i32,
+    inner_w: i32,
+    agents: &mot_core::agent::AgentSessions,
+    sc: f32,
+) -> i32 {
+    /// パネルに並べる最大件数（超過分は "+N more"）
+    const SHOWN: usize = 3;
+
+    let heading = if agents.len() > 1 {
+        format!("AGENT · {} SESSIONS", agents.len())
+    } else {
+        "AGENT".to_string()
+    };
+    nf.draw(fb, Face::Ui, &heading, x, y, 9.0 * sc, nc::TEXT_SUB);
+    y += si(14.0, sc);
+
+    for a in agents.iter().take(SHOWN) {
+        let col = agent_state_color(a.state);
+        // 1行目: 状態ドット + セッション名 + 右にモデル名
+        let dot = si(5.0, sc).max(2);
+        fb.fill_rect(x, y + si(3.0, sc), dot, dot, col);
+        let model = a.model.clone().unwrap_or_default();
+        let mw = if model.is_empty() {
+            0
+        } else {
+            nf.measure(Face::Ui, &model, 9.5 * sc) + si(6.0, sc)
+        };
+        // 名前が無い間は session_id の頭を出す（hooks だけ先に届いた直後など）
+        let name = a.session_name.clone().unwrap_or_else(|| {
+            let id: String = a.session_id.chars().take(8).collect();
+            format!("session {id}")
+        });
+        let name = ellipsize_right(nf, &name, inner_w - dot - si(6.0, sc) - mw, 10.5 * sc);
+        nf.draw(
+            fb,
+            Face::Ui,
+            &name,
+            x + dot + si(6.0, sc),
+            y + si(9.0, sc),
+            10.5 * sc,
+            nc::TEXT,
+        );
+        if !model.is_empty() {
+            let w = nf.measure(Face::Ui, &model, 9.5 * sc);
+            nf.draw(
+                fb,
+                Face::Ui,
+                &model,
+                x + inner_w - w,
+                y + si(9.0, sc),
+                9.5 * sc,
+                nc::VIOLET,
+            );
+        }
+        y += si(14.0, sc);
+
+        // 2行目: コンテキスト使用率のバー（無ければ飛ばす）
+        if let Some(pct) = a.ctx_pct {
+            let bar_col = gauge_color(pct, nc::CYAN);
+            nf.draw(
+                fb,
+                Face::Ui,
+                "ctx",
+                x,
+                y + si(8.0, sc),
+                9.5 * sc,
+                nc::TEXT_SUB,
+            );
+            let val = format!("{pct:.0}%");
+            let vw = nf.measure(Face::Mono, &val, 9.5 * sc);
+            nf.draw(
+                fb,
+                Face::Mono,
+                &val,
+                x + inner_w - vw,
+                y + si(8.0, sc),
+                9.5 * sc,
+                bar_col,
+            );
+            y += si(12.0, sc);
+            draw_metric_bar(fb, x, y, inner_w, pct, bar_col, sc);
+            y += si(8.0, sc);
+        }
+
+        // 3行目: 入出力トークンと課金額
+        let up = a.input_tokens.map(human_tokens);
+        let down = a.output_tokens.map(human_tokens);
+        if up.is_some() || down.is_some() {
+            let mut tx = x;
+            if let Some(v) = up {
+                nf.draw_icon(fb, icon::ARROW_UP, tx, y, 9.0 * sc, nc::GREEN);
+                tx = nf.draw(
+                    fb,
+                    Face::Mono,
+                    &v,
+                    tx + si(11.0, sc),
+                    y + si(8.0, sc),
+                    9.5 * sc,
+                    nc::TEXT_SUB,
+                ) + si(8.0, sc);
+            }
+            if let Some(v) = down {
+                nf.draw_icon(fb, icon::ARROW_DOWN, tx, y, 9.0 * sc, nc::VIOLET);
+                nf.draw(
+                    fb,
+                    Face::Mono,
+                    &v,
+                    tx + si(11.0, sc),
+                    y + si(8.0, sc),
+                    9.5 * sc,
+                    nc::TEXT_SUB,
+                );
+            }
+            if let Some(cost) = a.cost_usd {
+                let s = format!("${cost:.2}");
+                let w = nf.measure(Face::Mono, &s, 9.5 * sc);
+                nf.draw(
+                    fb,
+                    Face::Mono,
+                    &s,
+                    x + inner_w - w,
+                    y + si(8.0, sc),
+                    9.5 * sc,
+                    nc::TEXT_SUB,
+                );
+            }
+            y += si(13.0, sc);
+        }
+
+        // 実行中のツール（PreToolUse 〜 PostToolUse の間だけ出る）
+        if let Some(tool) = &a.tool {
+            nf.draw_icon(fb, icon::ZAP, x, y, 8.0 * sc, col);
+            let t = ellipsize_right(nf, tool, inner_w - si(11.0, sc), 9.5 * sc);
+            nf.draw(
+                fb,
+                Face::Mono,
+                &t,
+                x + si(11.0, sc),
+                y + si(8.0, sc),
+                9.5 * sc,
+                col,
+            );
+            y += si(13.0, sc);
+        }
+        y += si(6.0, sc);
+    }
+
+    if agents.len() > SHOWN {
+        let more = format!("+{} more", agents.len() - SHOWN);
+        nf.draw(
+            fb,
+            Face::Ui,
+            &more,
+            x,
+            y + si(8.0, sc),
+            9.5 * sc,
+            nc::TEXT_DIM,
+        );
+        y += si(16.0, sc);
+    }
+    y
+}
+
+/// 幅に収まらない文字列を末尾側から削り `head…` の形にする。
+fn ellipsize_right(nf: &mut NeoFonts, text: &str, max_w: i32, px: f32) -> String {
+    if max_w <= 0 || nf.measure(Face::Ui, text, px) <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for keep in (1..chars.len()).rev() {
+        let s: String = chars[..keep]
+            .iter()
+            .copied()
+            .chain(std::iter::once('…'))
+            .collect();
+        if nf.measure(Face::Ui, &s, px) <= max_w {
+            return s;
+        }
+    }
+    "…".to_string()
+}
+
 /// 右の情報パネル。アクティブタブのホスト情報とシステムメトリクスを縦に積む。
-fn draw_info_panel(fb: &mut Framebuffer, nf: &mut NeoFonts, lay: &NeoLayout, tab: Option<&Tab>) {
+fn draw_info_panel(
+    fb: &mut Framebuffer,
+    nf: &mut NeoFonts,
+    lay: &NeoLayout,
+    tab: Option<&Tab>,
+    metrics_enabled: bool,
+) {
     let Some(s) = lay.info else {
         return;
     };
@@ -1963,6 +2181,65 @@ fn draw_info_panel(fb: &mut Framebuffer, nf: &mut NeoFonts, lay: &NeoLayout, tab
     y += si(12.0, sc);
 
     // ── SYSTEM ────────────────────────────────────────────────────
+    // config.metrics で採取を止めているならセクションごと出さない
+    // （パネルの他の内容は使えるので、パネル自体は畳まない）。
+    if metrics_enabled {
+        y = draw_system_section(fb, nf, &s, x, y, inner_w, tab, sc);
+        hline(fb, s.x, y, s.w, nc::PANEL, 0.09);
+        y += si(12.0, sc);
+    }
+
+    // ── AGENT（リモートの Claude Code）────────────────────────────
+    // 未設定のホストでは 1 件も来ないので、その場合はセクションごと出さない。
+    let agents = tab.panes.get(&tab.focus).map(|p| &p.agents);
+    if let Some(agents) = agents.filter(|a| !a.is_empty()) {
+        y = draw_agent_section(fb, nf, x, y, inner_w, agents, sc);
+        hline(fb, s.x, y, s.w, nc::PANEL, 0.09);
+        y += si(12.0, sc);
+    }
+
+    // ── AUTHENTICATION ────────────────────────────────────────────
+    nf.draw(fb, Face::Ui, "AUTHENTICATION", x, y, 9.0 * sc, nc::TEXT_SUB);
+    y += si(14.0, sc);
+    if let Some(p) = &tab.profile {
+        let (ic, text, color) = match &p.auth {
+            mot_core::model::AuthMethod::Publickey { key } => (icon::KEY, key.clone(), nc::AMBER),
+            mot_core::model::AuthMethod::Agent => {
+                (icon::SHIELD, "ssh-agent".to_string(), nc::GREEN)
+            }
+            mot_core::model::AuthMethod::Password { .. } => {
+                (icon::LOCK, "password".to_string(), nc::TEXT_SUB)
+            }
+        };
+        nf.draw_icon(fb, ic, x, y, 9.0 * sc, color);
+        // 鍵パスは長いので右から詰めて末尾（ファイル名側）を残す。
+        let avail = inner_w - si(14.0, sc);
+        let text = ellipsize_left(nf, &text, avail, 10.0 * sc);
+        nf.draw(
+            fb,
+            Face::Mono,
+            &text,
+            x + si(14.0, sc),
+            y + si(8.0, sc),
+            10.0 * sc,
+            color,
+        );
+    }
+}
+
+/// 情報パネルの SYSTEM セクション（CPU/メモリ/ディスク）。戻り値は次のセクションの開始 y。
+#[allow(clippy::too_many_arguments)]
+fn draw_system_section(
+    fb: &mut Framebuffer,
+    nf: &mut NeoFonts,
+    s: &R,
+    x: i32,
+    mut y: i32,
+    inner_w: i32,
+    tab: &Tab,
+    sc: f32,
+) -> i32 {
+    let _ = s;
     let heading = match (tab.metrics_unavailable, tab.metrics_at) {
         (true, _) => "SYSTEM · UNAVAILABLE".to_string(),
         (false, Some(at)) => format!("SYSTEM · {}s AGO", at.elapsed().as_secs()),
@@ -2067,38 +2344,7 @@ fn draw_info_panel(fb: &mut Framebuffer, nf: &mut NeoFonts, lay: &NeoLayout, tab
         );
         y += si(20.0, sc);
     }
-
-    y += si(6.0, sc);
-    hline(fb, s.x, y, s.w, nc::PANEL, 0.09);
-    y += si(12.0, sc);
-
-    // ── AUTHENTICATION ────────────────────────────────────────────
-    nf.draw(fb, Face::Ui, "AUTHENTICATION", x, y, 9.0 * sc, nc::TEXT_SUB);
-    y += si(14.0, sc);
-    if let Some(p) = &tab.profile {
-        let (ic, text, color) = match &p.auth {
-            mot_core::model::AuthMethod::Publickey { key } => (icon::KEY, key.clone(), nc::AMBER),
-            mot_core::model::AuthMethod::Agent => {
-                (icon::SHIELD, "ssh-agent".to_string(), nc::GREEN)
-            }
-            mot_core::model::AuthMethod::Password { .. } => {
-                (icon::LOCK, "password".to_string(), nc::TEXT_SUB)
-            }
-        };
-        nf.draw_icon(fb, ic, x, y, 9.0 * sc, color);
-        // 鍵パスは長いので右から詰めて末尾（ファイル名側）を残す。
-        let avail = inner_w - si(14.0, sc);
-        let text = ellipsize_left(nf, &text, avail, 10.0 * sc);
-        nf.draw(
-            fb,
-            Face::Mono,
-            &text,
-            x + si(14.0, sc),
-            y + si(8.0, sc),
-            10.0 * sc,
-            color,
-        );
-    }
+    y + si(6.0, sc)
 }
 
 /// 幅に収まらない文字列を先頭側から削り `…path` の形にする（末尾を残す）。

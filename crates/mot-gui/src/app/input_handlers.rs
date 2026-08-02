@@ -337,6 +337,7 @@ impl App {
                         scroll: 0,
                         cols,
                         rows,
+                        agents: Default::default(),
                     },
                 );
                 tab.focus = new_id;

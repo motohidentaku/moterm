@@ -1,6 +1,7 @@
 //! mot-core — 設定(Lua)・profiles.json・ランチャーモデル・暗号ボールト・ppk 変換・i18n。
 //! GUI/SSH 非依存でユニットテスト可能。
 
+pub mod agent;
 pub mod config_lua;
 pub mod i18n;
 pub mod keymap;

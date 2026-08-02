@@ -104,6 +104,52 @@ config.metrics = {
 3 回連続で失敗したらそのタブでは採取をやめる）。パネルを閉じている間・非アクティブなタブでは
 コマンドを送らない。
 
+### 接続先で動く Claude Code の状況を表示する
+
+情報パネルの AGENT セクションに、SSH 先で動いている [Claude Code](https://claude.com/claude-code)
+のモデル・コンテキスト使用率・トークン・課金額・実行中のツールを出せる。**接続先に設定を1つ置く**
+だけで、moterm 側の設定は要らない。
+
+1. `scripts/moterm-claude.sh` を接続先の `~/.claude/moterm-claude.sh` へコピーして `chmod +x`
+2. 接続先の `~/.claude/settings.json` に追記:
+
+```json
+{
+  "statusLine": { "type": "command", "command": "~/.claude/moterm-claude.sh" },
+  "hooks": {
+    "SessionStart":     [{ "hooks": [{ "type": "command", "command": "~/.claude/moterm-claude.sh" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "~/.claude/moterm-claude.sh" }] }],
+    "PreToolUse":       [{ "hooks": [{ "type": "command", "command": "~/.claude/moterm-claude.sh" }] }],
+    "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "~/.claude/moterm-claude.sh" }] }],
+    "Notification":     [{ "hooks": [{ "type": "command", "command": "~/.claude/moterm-claude.sh" }] }],
+    "Stop":             [{ "hooks": [{ "type": "command", "command": "~/.claude/moterm-claude.sh" }] }],
+    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "~/.claude/moterm-claude.sh" }] }]
+  }
+}
+```
+
+statusLine が渡してくる JSON を**加工せず** OSC 7777 で `/dev/tty` へ流すだけなので、
+接続先に `jq` 等は要らない。Claude Code 側の画面には何も出ない。
+
+**すでに statusLine を使っている場合**は既存コマンドを引数に渡す。同じ JSON をそのまま
+流し込むので表示は変わらない（`statusLine` は1つしか設定できないためのラッパー方式）:
+
+```json
+"statusLine": { "type": "command", "command": "~/.claude/moterm-claude.sh ~/.claude/statusline.sh" }
+```
+
+**tmux 越しに使う場合**は接続先の `~/.tmux.conf` に次が必要（tmux は未知の OSC を捨てるため）:
+
+```
+set -g allow-passthrough on
+```
+
+複数の Claude Code を tmux で並べると 1 本の PTY に混ざって流れてくるが、moterm は
+`session_id` で分けて更新の新しい順に最大3件（保持は8件）表示する。ただし **どの tmux pane を
+見ているかは moterm には分からない**ため、表示されるのは「最後に動いたセッション」から順になる。
+
+状態ドットの色: シアン = 応答生成中／ツール実行中、琥珀 = 権限プロンプト待ち、グレー = 入力待ち。
+
 ### 主なキー操作（F1〜F6・タブ切替・コピペ等の16アクションは `config.keys` で変更可）
 
 | キー | 動作 | キー | 動作 |
