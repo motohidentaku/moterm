@@ -6,8 +6,10 @@ use mot_core::model::{AuthMethod, Profile};
 use mot_core::vault::{Vault, VaultError};
 use mot_ssh::{known_hosts, AuthCallbacks, ConnectParams, HostKeyDecision, PaneHandle, SshSession};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// 解錠済みボールトの共有ハンドル（プロセス内でセッション横断に保持）。
 pub type SharedVault = Arc<Mutex<Option<Vault>>>;
@@ -63,7 +65,50 @@ pub enum ConnEvent {
         total: usize,
         failed: usize,
     },
+    /// リモートのシステムメトリクスを1回分採取した。
+    Metrics {
+        conn: ConnId,
+        snap: mot_core::metrics::HostMetrics,
+    },
+    /// メトリクス採取を諦めた（非対応OS・制限シェル等）。以後このタブでは更新されない。
+    MetricsUnavailable { conn: ConnId },
 }
+
+/// メトリクス採取タスクの外部制御。GUI 側がタブと同寿命で保持する。
+///
+/// Clone しない: drop でタスクを止めるため、所有者はタブ 1 箇所に限る。
+/// タブを閉じても再接続で差し替えても、これが落ちれば採取タスクも止まる。
+pub struct MetricsCtl {
+    /// true でタスクを終了させる（タブを閉じた・切断した）
+    stop: Arc<AtomicBool>,
+    /// true の間は採取をスキップする（情報パネル非表示・最小化中）
+    paused: Arc<AtomicBool>,
+}
+
+impl MetricsCtl {
+    fn new() -> MetricsCtl {
+        MetricsCtl {
+            stop: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    /// 採取の一時停止/再開。リモートへの無駄なコマンド実行を止める。
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, AtomicOrdering::Relaxed);
+    }
+}
+
+impl Drop for MetricsCtl {
+    fn drop(&mut self) {
+        self.stop.store(true, AtomicOrdering::Relaxed);
+    }
+}
+
+/// メトリクス採取が続けて失敗したときに諦める回数。
+/// 非対応 OS・制限シェルで延々とコマンドを投げ続けないための上限。
+const METRICS_MAX_FAILS: u32 = 3;
+/// 1 回の採取に許す時間。コマンド自身が `sleep 1` を含むぶん長めに取る。
+const METRICS_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub struct Connector {
     rt: tokio::runtime::Runtime,
@@ -182,6 +227,69 @@ impl Connector {
             }
         });
         conn
+    }
+
+    /// メトリクス採取タスクを起動する。interval ごとに 1 回 exec し、結果を
+    /// `ConnEvent::Metrics` で GUI へ返す。戻り値の Ctl でタブ側から停止・一時停止する。
+    ///
+    /// 接続直後は待たずに 1 回採取する（パネルが空のまま数分放置されるのを避ける）。
+    pub fn start_metrics(
+        &self,
+        conn: ConnId,
+        probe: mot_ssh::ExecProbe,
+        interval: Duration,
+    ) -> MetricsCtl {
+        let ctl = MetricsCtl::new();
+        let tx = self.tx.clone();
+        let stop = ctl.stop.clone();
+        let paused = ctl.paused.clone();
+
+        self.rt.spawn(async move {
+            let mut fails: u32 = 0;
+            loop {
+                if stop.load(AtomicOrdering::Relaxed) {
+                    break;
+                }
+                // セッションが切れていれば黙って終わる（切断は別経路で通知済み）
+                if probe.is_closed() {
+                    break;
+                }
+                if !paused.load(AtomicOrdering::Relaxed) {
+                    let result = probe
+                        .run(mot_core::metrics::METRICS_COMMAND, METRICS_TIMEOUT)
+                        .await;
+                    match result {
+                        Ok(out) => match mot_core::metrics::parse_metrics(&out) {
+                            Some(snap) => {
+                                fails = 0;
+                                if tx.send(ConnEvent::Metrics { conn, snap }).is_err() {
+                                    break; // GUI 側が畳まれた
+                                }
+                            }
+                            None => {
+                                fails += 1;
+                                log::debug!(
+                                    "conn {conn}: メトリクスをパースできません（{fails}回目）: {out:?}"
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            fails += 1;
+                            log::debug!("conn {conn}: メトリクス採取に失敗（{fails}回目）: {e}");
+                        }
+                    }
+                    if fails >= METRICS_MAX_FAILS {
+                        log::info!(
+                            "conn {conn}: メトリクス採取を停止します（{METRICS_MAX_FAILS}回連続失敗）"
+                        );
+                        let _ = tx.send(ConnEvent::MetricsUnavailable { conn });
+                        break;
+                    }
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+        ctl
     }
 
     /// 既存セッション上に追加ペインを開く（分割）。ブロッキングで即取得。

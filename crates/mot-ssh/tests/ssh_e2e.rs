@@ -170,3 +170,48 @@ async fn sftp_roundtrip() {
 
     sftp.remove_file(&remote).await.expect("cleanup");
 }
+
+#[tokio::test]
+async fn exec_captures_stdout() {
+    let Some(params) = e2e_params(AuthMethod::Publickey {
+        key: env("MOTERM_SSH_KEY").unwrap_or_default(),
+    }) else {
+        return;
+    };
+    let session = SshSession::connect(params, accept_all(), None, AuthCallbacks::none())
+        .await
+        .expect("connect");
+    let probe = session.exec_probe();
+
+    // stdout だけを拾い、stderr は混ざらないこと
+    let out = probe
+        .run(
+            "echo MOTERM_EXEC_$((6*7)); echo noise >&2",
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("exec");
+    assert!(out.contains("MOTERM_EXEC_42"), "output was: {out}");
+    assert!(!out.contains("noise"), "stderr が混入: {out}");
+
+    // 非ゼロ終了でも stdout は返る
+    let out = probe
+        .run("echo before; exit 3", Duration::from_secs(5))
+        .await
+        .expect("exec with nonzero exit");
+    assert!(out.contains("before"), "output was: {out}");
+
+    // タイムアウトはエラーとして返る（ハングしない）
+    let err = probe.run("sleep 10", Duration::from_secs(1)).await;
+    assert!(err.is_err(), "タイムアウトが検出されていない");
+
+    // 実際のメトリクス採取コマンドが Linux で通ること
+    let out = probe
+        .run(mot_core::metrics::METRICS_COMMAND, Duration::from_secs(8))
+        .await
+        .expect("metrics exec");
+    assert!(
+        mot_core::metrics::parse_metrics(&out).is_some(),
+        "メトリクスをパースできない: {out}"
+    );
+}

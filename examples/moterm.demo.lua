@@ -31,4 +31,11 @@ config.groups = {
   { name = 'demo', label = 'デモ環境', connect = 'parallel' },
 }
 
+-- リモートのシステムメトリクス（右の情報パネル / F6 で開閉）
+config.metrics = {
+  enabled = true,
+  interval_min = 1, -- 採取間隔（分）。0 で停止
+  panel = true,     -- 起動時にパネルを開く
+}
+
 return config

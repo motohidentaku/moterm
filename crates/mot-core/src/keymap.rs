@@ -21,6 +21,8 @@ pub enum Action {
     Download,
     Reload,
     PfPanel,
+    /// 右の情報パネル（ホスト情報 + システムメトリクス）の表示切替。
+    InfoPanel,
     ScrollPageUp,
     ScrollPageDown,
 }
@@ -136,6 +138,7 @@ pub fn parse_action(s: &str) -> Option<Action> {
         "download" => Some(Action::Download),
         "reload" => Some(Action::Reload),
         "pf_panel" => Some(Action::PfPanel),
+        "info_panel" => Some(Action::InfoPanel),
         "scroll_page_up" => Some(Action::ScrollPageUp),
         "scroll_page_down" => Some(Action::ScrollPageDown),
         _ => None,
@@ -168,6 +171,8 @@ impl Default for Keymap {
             ((F(4), ModMask::NONE), CloseTab),
             ((F(5), ModMask::NONE), Reconnect),
             ((F(2), ModMask::NONE), PfPanel),
+            // F3 は SFTP に固定割当のため情報パネルは F6。
+            ((F(6), ModMask::NONE), InfoPanel),
             ((PageDown, ModMask::CTRL), NextTab),
             ((PageUp, ModMask::CTRL), PrevTab),
             ((Char('c'), ModMask::CTRL_SHIFT), Copy),
@@ -294,6 +299,10 @@ mod tests {
         assert_eq!(
             km.lookup(KeyName::F(2), ModMask::NONE),
             Some(Action::PfPanel)
+        );
+        assert_eq!(
+            km.lookup(KeyName::F(6), ModMask::NONE),
+            Some(Action::InfoPanel)
         );
         assert_eq!(
             km.lookup(KeyName::PageDown, ModMask::CTRL),

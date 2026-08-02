@@ -9,16 +9,10 @@ IMAGE=moterm-dev
 # イメージが無ければ自動ビルド
 docker image inspect "$IMAGE" >/dev/null 2>&1 || docker build -t "$IMAGE" -f docker/dev.Dockerfile docker
 
-# AppArmor が有効でも dockerd が docker-default プロファイルをロードできない環境
-# （ネストした仮想化ホスト等。/sys/kernel/security/apparmor/profiles が root でも
-# 読めない）では、既定プロファイルの適用に失敗してコンテナが起動できない:
-#   unable to apply apparmor profile: ... no such file or directory
-# その場合だけ unconfined で起動する（適用できる環境では既定のまま保護を効かせる）。
-SECOPT=()
-if ! docker run --rm "$IMAGE" true >/dev/null 2>&1 \
-  && docker run --rm --security-opt apparmor=unconfined "$IMAGE" true >/dev/null 2>&1; then
-  SECOPT=(--security-opt apparmor=unconfined)
-fi
+# AppArmor 適用不能な環境の判定（詳細は docker/lib.sh）。
+# shellcheck source=docker/lib.sh
+. "$(dirname "$0")/lib.sh"
+detect_secopt "$IMAGE"
 
 # cargo レジストリの named volume は初回作成時 root 所有になり、下の -u $(id -u) では
 # 書けず cargo が Permission denied で落ちる。作成が必要なときだけ作って所有権を

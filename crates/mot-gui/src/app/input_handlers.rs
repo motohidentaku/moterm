@@ -292,6 +292,7 @@ impl App {
             GuiAction::FocusDown => self.move_focus(Move::Down),
             GuiAction::Broadcast => self.broadcast = !self.broadcast,
             GuiAction::PfPanel => self.show_pf_panel = !self.show_pf_panel,
+            GuiAction::InfoPanel => self.neo_info_visible = !self.neo_info_visible,
             GuiAction::Sftp => self.open_sftp_fm(),
             GuiAction::Search => self.search = Some(SearchState::new()),
             GuiAction::Copy => self.copy_selection(),

@@ -150,6 +150,12 @@ impl SshSession {
             .map_err(SshError::Russh)
     }
 
+    /// 非対話コマンド実行用のハンドルを得る（メトリクス採取などのバックグラウンド用途）。
+    /// Clone 可能でセッション本体とは独立に tokio タスクへ渡せる。
+    pub fn exec_probe(&self) -> crate::exec::ExecProbe {
+        crate::exec::ExecProbe::new(self.handle.clone())
+    }
+
     /// SFTP セッションを開く。
     pub async fn open_sftp(&self) -> Result<crate::sftp::Sftp, SshError> {
         crate::sftp::Sftp::open(&self.handle).await

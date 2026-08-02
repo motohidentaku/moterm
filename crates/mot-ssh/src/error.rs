@@ -26,6 +26,8 @@ pub enum SshError {
     /// （aws ssm 等は失敗理由を stderr にしか出さないため）。
     ProxyCommand(String),
     Sftp(String),
+    /// exec チャネルでのコマンド実行に失敗（タイムアウト含む）
+    Exec(String),
     Russh(russh::Error),
     Other(String),
 }
@@ -45,6 +47,7 @@ impl fmt::Display for SshError {
             SshError::Forward(m) => write!(f, "ポートフォワード確立に失敗しました: {m}"),
             SshError::ProxyCommand(m) => write!(f, "proxy_command の実行に失敗しました: {m}"),
             SshError::Sftp(m) => write!(f, "SFTP エラー: {m}"),
+            SshError::Exec(m) => write!(f, "コマンド実行に失敗しました: {m}"),
             SshError::Russh(e) => write!(f, "SSH エラー: {e}"),
             SshError::Other(m) => write!(f, "{m}"),
         }

@@ -67,6 +67,8 @@ pub enum GuiAction {
     Download,
     Reload,
     PfPanel,
+    /// 右の情報パネル（ホスト情報 + システムメトリクス）の表示切替（F6）
+    InfoPanel,
     ScrollPageUp,
     ScrollPageDown,
     Sftp,
@@ -127,6 +129,7 @@ pub fn action_to_gui(action: Action) -> GuiAction {
         Action::Download => GuiAction::Download,
         Action::Reload => GuiAction::Reload,
         Action::PfPanel => GuiAction::PfPanel,
+        Action::InfoPanel => GuiAction::InfoPanel,
         Action::ScrollPageUp => GuiAction::ScrollPageUp,
         Action::ScrollPageDown => GuiAction::ScrollPageDown,
     }
@@ -201,6 +204,7 @@ pub fn terminal_shortcut(term_key: &TermKey, mods: Mods) -> Option<GuiAction> {
         TermKey::F(3) => Some(GuiAction::Sftp),
         TermKey::F(4) => Some(GuiAction::CloseTab),
         TermKey::F(5) => Some(GuiAction::Reconnect),
+        TermKey::F(6) => Some(GuiAction::InfoPanel),
         TermKey::Char('t') if ctrl && !shift => Some(GuiAction::SidebarFocus),
         // Ctrl+1..=9
         TermKey::Char(c) if ctrl && !shift && c.is_ascii_digit() && *c != '0' => {

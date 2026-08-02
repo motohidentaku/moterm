@@ -5,6 +5,7 @@ pub mod config_lua;
 pub mod i18n;
 pub mod keymap;
 pub mod launcher;
+pub mod metrics;
 pub mod model;
 pub mod ppk;
 pub mod store;
@@ -12,8 +13,8 @@ pub mod ui_state;
 pub mod vault;
 
 pub use model::{
-    AuthMethod, Config, ForwardType, GroupCfg, KeepaliveCfg, KeyBinding, LogCfg, OnConnectWait,
-    PortForward, Profile, ReconnectCfg, WindowCfg,
+    AuthMethod, Config, ForwardType, GroupCfg, KeepaliveCfg, KeyBinding, LogCfg, MetricsCfg,
+    OnConnectWait, PortForward, Profile, ReconnectCfg, WindowCfg,
 };
 
 #[cfg(test)]

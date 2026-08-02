@@ -208,6 +208,49 @@ pub struct WindowCfg {
     pub title_bar: bool,
 }
 
+/// リモートのシステムメトリクス採取設定（情報パネルの System 表示）。
+///
+/// 注意: `derive(Default)` は使わない。フィールド個別の serde default と
+/// 食い違い、テーブルごと省略した場合だけ無効になる罠を避けるため手書きする。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetricsCfg {
+    /// false なら採取タスクを起動しない
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 採取間隔（分）。0 なら採取しない。
+    #[serde(default = "default_metrics_interval_min")]
+    pub interval_min: u32,
+    /// 情報パネルの既定の表示状態
+    #[serde(default = "default_true")]
+    pub panel: bool,
+}
+
+fn default_metrics_interval_min() -> u32 {
+    1
+}
+
+impl Default for MetricsCfg {
+    fn default() -> Self {
+        MetricsCfg {
+            enabled: true,
+            interval_min: default_metrics_interval_min(),
+            panel: true,
+        }
+    }
+}
+
+impl MetricsCfg {
+    /// 実際の採取間隔。無効なら None。
+    pub fn interval(&self) -> Option<std::time::Duration> {
+        if !self.enabled || self.interval_min == 0 {
+            return None;
+        }
+        Some(std::time::Duration::from_secs(
+            self.interval_min as u64 * 60,
+        ))
+    }
+}
+
 /// アプリ全体設定（moterm.lua 相当）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
@@ -257,6 +300,9 @@ pub struct Config {
     /// UI テーマ: 'classic'(既定) | 'neo'（未来的3カラムUI）。
     #[serde(default)]
     pub ui: Option<String>,
+    /// リモートのシステムメトリクス採取（NEO-UI の情報パネル）
+    #[serde(default)]
+    pub metrics: MetricsCfg,
 }
 
 fn default_font_size() -> f32 {
@@ -298,6 +344,7 @@ impl Default for Config {
             keys: Vec::new(),
             treat_east_asian_ambiguous_width_as_wide: false,
             ui: None,
+            metrics: MetricsCfg::default(),
         }
     }
 }

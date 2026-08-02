@@ -57,6 +57,8 @@ struct NeoLayout {
     subtab: Option<R>,
     /// 中央ペイン（端末 or SFTP の描画領域）。subtab がある時はその下。
     terminal: R,
+    /// 右の情報パネル（ホスト情報 + メトリクス）。畳んでいる時は None。
+    info: Option<R>,
     status: R,
 }
 
@@ -64,6 +66,9 @@ struct NeoLayout {
 const TITLE_H: f32 = 32.0;
 const STATUS_H: f32 = 24.0;
 const SIDEBAR_W: f32 = 224.0;
+const INFO_W: f32 = 258.0;
+/// 情報パネルを出しても中央にこれだけの幅が残らなければ畳む（端末が潰れるのを防ぐ）。
+const CENTER_MIN_W: f32 = 320.0;
 const TABSTRIP_H: f32 = 36.0;
 const TERM_HEADER_H: f32 = 30.0;
 const SUBTAB_H: f32 = 30.0;
@@ -75,16 +80,20 @@ fn si(n: f32, scale: f32) -> i32 {
 }
 
 impl NeoLayout {
-    fn compute(w: i32, h: i32, scale: f32, sftp_open: bool) -> NeoLayout {
+    fn compute(w: i32, h: i32, scale: f32, sftp_open: bool, info_open: bool) -> NeoLayout {
         let title_h = si(TITLE_H, scale);
         let status_h = si(STATUS_H, scale);
         let tabstrip_h = si(TABSTRIP_H, scale);
         let subtab_h = if sftp_open { si(SUBTAB_H, scale) } else { 0 };
         let sidebar_w = si(SIDEBAR_W, scale).min(w / 3).max(0);
+        // 情報パネルを出すと中央が最小幅を割る場合は畳む（狭いウィンドウ対策）。
+        let info_w = si(INFO_W, scale).min(w / 3).max(0);
+        let info_open = info_open && (w - sidebar_w - info_w) >= si(CENTER_MIN_W, scale);
+        let info_w = if info_open { info_w } else { 0 };
         let body_top = title_h;
         let body_bot = (h - status_h).max(body_top);
         let center_x = sidebar_w;
-        let center_w = (w - sidebar_w).max(0);
+        let center_w = (w - sidebar_w - info_w).max(0);
         let content_top = body_top + tabstrip_h + subtab_h;
         NeoLayout {
             scale,
@@ -121,6 +130,16 @@ impl NeoLayout {
                 y: content_top,
                 w: center_w,
                 h: (body_bot - content_top).max(0),
+            },
+            info: if info_open {
+                Some(R {
+                    x: center_x + center_w,
+                    y: body_top,
+                    w: info_w,
+                    h: body_bot - body_top,
+                })
+            } else {
+                None
             },
             status: R {
                 x: 0,
@@ -221,6 +240,8 @@ impl App {
             self.fb.h as i32,
             self.neo_scale(),
             belongs,
+            // SFTP は 2 ペインに幅を要するため、その間は情報パネルを畳む。
+            self.neo_info_visible && !belongs,
         )
     }
 
@@ -324,6 +345,7 @@ impl App {
             draw_broadcast_bar(fb, neo_fonts, &lay, scale);
         }
 
+        draw_info_panel(fb, neo_fonts, &lay, tabs.get(active_tab));
         draw_statusbar(fb, neo_fonts, &lay, tabs, active_tab, phase);
     }
 
@@ -1815,6 +1837,287 @@ fn sidebar_rows(
     rows
 }
 
+/// 使用率に応じた色（Figma 準拠: 70% 超で赤、50% 超で琥珀、それ以下は基準色）。
+fn gauge_color(pct: f32, base: Pixel) -> Pixel {
+    if pct > 70.0 {
+        nc::RED
+    } else if pct > 50.0 {
+        nc::AMBER
+    } else {
+        base
+    }
+}
+
+/// 使用率バー 1 本。高さ 2px の溝に色を敷き、値の分だけ塗る。
+fn draw_metric_bar(fb: &mut Framebuffer, x: i32, y: i32, w: i32, pct: f32, color: Pixel, sc: f32) {
+    let h = si(2.0, sc).max(1);
+    fb.fill_rect(x, y, w, h, nc::TEXT_DIM);
+    let fill = ((w as f32) * (pct.clamp(0.0, 100.0) / 100.0)).round() as i32;
+    if fill > 0 {
+        fb.fill_rect(x, y, fill, h, color);
+    }
+}
+
+/// kB を人が読める単位へ（メモリ/ディスクの補助表示用）。
+fn human_kb(kb: u64) -> String {
+    const UNITS: [(&str, f64); 3] = [
+        ("T", 1024.0 * 1024.0 * 1024.0),
+        ("G", 1024.0 * 1024.0),
+        ("M", 1024.0),
+    ];
+    let v = kb as f64;
+    for (u, div) in UNITS {
+        if v >= div {
+            return format!("{:.1}{u}", v / div);
+        }
+    }
+    format!("{kb}K")
+}
+
+/// 右の情報パネル。アクティブタブのホスト情報とシステムメトリクスを縦に積む。
+fn draw_info_panel(fb: &mut Framebuffer, nf: &mut NeoFonts, lay: &NeoLayout, tab: Option<&Tab>) {
+    let Some(s) = lay.info else {
+        return;
+    };
+    if s.w <= 0 {
+        return;
+    }
+    let sc = lay.scale;
+    fb.fill_rect(s.x, s.y, s.w, s.h, nc::PANEL);
+    vline(fb, s.x, s.y, s.h, nc::PANEL, 0.09);
+
+    let pad = si(14.0, sc);
+    let x = s.x + pad;
+    let inner_w = s.w - pad * 2;
+
+    let Some(tab) = tab else {
+        nf.draw(
+            fb,
+            Face::Ui,
+            "No session selected",
+            x,
+            s.y + si(60.0, sc),
+            11.0 * sc,
+            nc::TEXT_SUB,
+        );
+        return;
+    };
+
+    // ── ホストヘッダ ───────────────────────────────────────────────
+    let mut y = s.y + si(14.0, sc);
+    let badge = si(28.0, sc);
+    neo::fill_round_rect(fb, x, y, badge, badge, 6.0 * sc, nc::CYAN, 0.07);
+    neo::stroke_round_rect(fb, x, y, badge, badge, 6.0 * sc, nc::CYAN, 0.18, 1.0);
+    nf.draw_icon(
+        fb,
+        icon::SERVER,
+        x + si(8.0, sc),
+        y + si(8.0, sc),
+        13.0 * sc,
+        nc::CYAN,
+    );
+    let tx = x + badge + si(8.0, sc);
+    nf.draw(
+        fb,
+        Face::Ui,
+        &tab.title,
+        tx,
+        y + si(12.0, sc),
+        12.0 * sc,
+        nc::CYAN,
+    );
+    if let Some(p) = &tab.profile {
+        let addr = format!("{}@{}:{}", p.effective_user(), p.host, p.port);
+        nf.draw(
+            fb,
+            Face::Mono,
+            &addr,
+            tx,
+            y + si(24.0, sc),
+            9.5 * sc,
+            nc::TEXT_SUB,
+        );
+    }
+    y += badge + si(12.0, sc);
+
+    // ステータス（ドット＋大文字ラベル）
+    let col = status_color(&tab.status);
+    let dot = si(6.0, sc).max(2);
+    fb.fill_rect(x, y, dot, dot, col);
+    let label = match tab.status {
+        TabStatus::Connected => "CONNECTED",
+        TabStatus::Connecting => "CONNECTING",
+        TabStatus::Failed => "DISCONNECTED",
+    };
+    nf.draw(
+        fb,
+        Face::Mono,
+        label,
+        x + dot + si(6.0, sc),
+        y + si(6.0, sc),
+        9.5 * sc,
+        col,
+    );
+    y += si(18.0, sc);
+    hline(fb, s.x, y, s.w, nc::PANEL, 0.09);
+    y += si(12.0, sc);
+
+    // ── SYSTEM ────────────────────────────────────────────────────
+    let heading = match (tab.metrics_unavailable, tab.metrics_at) {
+        (true, _) => "SYSTEM · UNAVAILABLE".to_string(),
+        (false, Some(at)) => format!("SYSTEM · {}s AGO", at.elapsed().as_secs()),
+        (false, None) => "SYSTEM · ...".to_string(),
+    };
+    nf.draw(fb, Face::Ui, &heading, x, y, 9.0 * sc, nc::TEXT_SUB);
+    y += si(12.0, sc);
+
+    if let Some(m) = tab.metrics {
+        // 取得から間が空いた値は薄く出す（1 分間隔なので「今」ではないことを示す）。
+        let stale = tab
+            .metrics_at
+            .is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(150));
+        let rows: [(char, &str, f32, Pixel, String); 3] = [
+            (
+                icon::CPU,
+                "CPU",
+                m.cpu_pct,
+                gauge_color(m.cpu_pct, nc::CYAN),
+                String::new(),
+            ),
+            (
+                icon::ACTIVITY,
+                "Memory",
+                m.mem.used_pct(),
+                gauge_color(m.mem.used_pct(), nc::VIOLET),
+                format!(
+                    "{} / {}",
+                    human_kb(m.mem.used_kb()),
+                    human_kb(m.mem.total_kb)
+                ),
+            ),
+            (
+                icon::HARD_DRIVE,
+                "Disk",
+                m.disk.used_pct(),
+                gauge_color(m.disk.used_pct(), nc::GREEN),
+                format!(
+                    "{} / {}",
+                    human_kb(m.disk.used_kb),
+                    human_kb(m.disk.total_kb)
+                ),
+            ),
+        ];
+        for (ic, label, pct, color, sub) in rows {
+            let color = if stale { nc::TEXT_SUB } else { color };
+            nf.draw_icon(fb, ic, x, y, 9.0 * sc, nc::TEXT_SUB);
+            nf.draw(
+                fb,
+                Face::Ui,
+                label,
+                x + si(14.0, sc),
+                y + si(8.0, sc),
+                10.0 * sc,
+                nc::TEXT_SUB,
+            );
+            let val = format!("{pct:.0}%");
+            let vw = nf.measure(Face::Mono, &val, 10.5 * sc);
+            nf.draw(
+                fb,
+                Face::Mono,
+                &val,
+                x + inner_w - vw,
+                y + si(8.0, sc),
+                10.5 * sc,
+                color,
+            );
+            y += si(15.0, sc);
+            draw_metric_bar(fb, x, y, inner_w, pct, color, sc);
+            y += si(6.0, sc);
+            if !sub.is_empty() {
+                let sw = nf.measure(Face::Mono, &sub, 9.0 * sc);
+                nf.draw(
+                    fb,
+                    Face::Mono,
+                    &sub,
+                    x + inner_w - sw,
+                    y + si(9.0, sc),
+                    9.0 * sc,
+                    nc::TEXT_SUB,
+                );
+                y += si(12.0, sc);
+            }
+            y += si(8.0, sc);
+        }
+    } else {
+        let msg = if tab.metrics_unavailable {
+            "このホストでは取得できません"
+        } else if tab.status == TabStatus::Connected {
+            "取得中..."
+        } else {
+            "未接続"
+        };
+        nf.draw(
+            fb,
+            Face::Ui,
+            msg,
+            x,
+            y + si(8.0, sc),
+            10.0 * sc,
+            nc::TEXT_DIM,
+        );
+        y += si(20.0, sc);
+    }
+
+    y += si(6.0, sc);
+    hline(fb, s.x, y, s.w, nc::PANEL, 0.09);
+    y += si(12.0, sc);
+
+    // ── AUTHENTICATION ────────────────────────────────────────────
+    nf.draw(fb, Face::Ui, "AUTHENTICATION", x, y, 9.0 * sc, nc::TEXT_SUB);
+    y += si(14.0, sc);
+    if let Some(p) = &tab.profile {
+        let (ic, text, color) = match &p.auth {
+            mot_core::model::AuthMethod::Publickey { key } => (icon::KEY, key.clone(), nc::AMBER),
+            mot_core::model::AuthMethod::Agent => {
+                (icon::SHIELD, "ssh-agent".to_string(), nc::GREEN)
+            }
+            mot_core::model::AuthMethod::Password { .. } => {
+                (icon::LOCK, "password".to_string(), nc::TEXT_SUB)
+            }
+        };
+        nf.draw_icon(fb, ic, x, y, 9.0 * sc, color);
+        // 鍵パスは長いので右から詰めて末尾（ファイル名側）を残す。
+        let avail = inner_w - si(14.0, sc);
+        let text = ellipsize_left(nf, &text, avail, 10.0 * sc);
+        nf.draw(
+            fb,
+            Face::Mono,
+            &text,
+            x + si(14.0, sc),
+            y + si(8.0, sc),
+            10.0 * sc,
+            color,
+        );
+    }
+}
+
+/// 幅に収まらない文字列を先頭側から削り `…path` の形にする（末尾を残す）。
+fn ellipsize_left(nf: &mut NeoFonts, text: &str, max_w: i32, px: f32) -> String {
+    if nf.measure(Face::Mono, text, px) <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for skip in 1..chars.len() {
+        let s: String = std::iter::once('…')
+            .chain(chars[skip..].iter().copied())
+            .collect();
+        if nf.measure(Face::Mono, &s, px) <= max_w {
+            return s;
+        }
+    }
+    "…".to_string()
+}
+
 fn draw_sidebar(
     fb: &mut Framebuffer,
     nf: &mut NeoFonts,
@@ -2989,4 +3292,50 @@ fn draw_statusbar(
         10.0 * sc,
         nc::GREEN,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 情報パネルを開くと中央（端末）がその分だけ狭くなる。
+    #[test]
+    fn info_panel_takes_width_from_center() {
+        let closed = NeoLayout::compute(1600, 900, 1.0, false, false);
+        let open = NeoLayout::compute(1600, 900, 1.0, false, true);
+        assert!(closed.info.is_none());
+        let info = open.info.expect("パネルが開いている");
+        assert_eq!(info.w, INFO_W as i32);
+        assert_eq!(open.terminal.w, closed.terminal.w - info.w);
+        // パネルは中央の右隣、右端まで
+        assert_eq!(info.x, open.terminal.x + open.terminal.w);
+        assert_eq!(info.x + info.w, 1600);
+    }
+
+    /// 中央が最小幅を割るほど狭いウィンドウでは、要求しても畳む。
+    #[test]
+    fn info_panel_collapses_on_narrow_window() {
+        let lay = NeoLayout::compute(600, 800, 1.0, false, true);
+        assert!(lay.info.is_none(), "狭い窓でパネルが開いている");
+        // 畳んだぶん中央は全幅を使う
+        let closed = NeoLayout::compute(600, 800, 1.0, false, false);
+        assert_eq!(lay.terminal.w, closed.terminal.w);
+    }
+
+    /// 使用率のしきい値（Figma 準拠）。
+    #[test]
+    fn gauge_color_thresholds() {
+        assert_eq!(gauge_color(0.0, nc::CYAN), nc::CYAN);
+        assert_eq!(gauge_color(50.0, nc::CYAN), nc::CYAN);
+        assert_eq!(gauge_color(50.1, nc::CYAN), nc::AMBER);
+        assert_eq!(gauge_color(70.0, nc::CYAN), nc::AMBER);
+        assert_eq!(gauge_color(70.1, nc::CYAN), nc::RED);
+    }
+
+    #[test]
+    fn human_kb_units() {
+        assert_eq!(human_kb(512), "512K");
+        assert_eq!(human_kb(2048), "2.0M");
+        assert_eq!(human_kb(3 * 1024 * 1024), "3.0G");
+    }
 }

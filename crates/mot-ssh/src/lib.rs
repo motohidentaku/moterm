@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod error;
+pub mod exec;
 pub mod forward;
 pub mod handler;
 pub mod log;
@@ -16,6 +17,7 @@ pub mod sftp;
 
 pub use auth::AuthCallbacks;
 pub use error::SshError;
+pub use exec::ExecProbe;
 pub use forward::ForwardStatus;
 pub use handler::{HostKeyDecision, HostKeyVerifier};
 pub use params::{ConnectParams, ProxyJump};

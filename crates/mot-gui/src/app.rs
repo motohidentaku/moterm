@@ -56,6 +56,14 @@ pub struct Tab {
     pub reconnect_attempts: u32,
     /// 次の再接続を試みる時刻（バックオフ待ち。None=予約なし）。
     pub reconnect_at: Option<std::time::Instant>,
+    /// 直近のシステムメトリクス（None=まだ 1 回も取れていない）。
+    pub metrics: Option<mot_core::metrics::HostMetrics>,
+    /// メトリクスの取得時刻（経過時間の表示に使う）。
+    pub metrics_at: Option<std::time::Instant>,
+    /// 採取を諦めた（非対応 OS・制限シェル等）。
+    pub metrics_unavailable: bool,
+    /// 採取タスクの制御ハンドル。drop でタスクが止まる。
+    pub metrics_ctl: Option<crate::runtime::MetricsCtl>,
 }
 
 impl Tab {
@@ -73,6 +81,10 @@ impl Tab {
             error: None,
             reconnect_attempts: 0,
             reconnect_at: None,
+            metrics: None,
+            metrics_at: None,
+            metrics_unavailable: false,
+            metrics_ctl: None,
         }
     }
 }
@@ -287,6 +299,9 @@ pub struct App {
     /// NEO-UI: サイドバーのキーボード選択モード。Some(i) なら sidebar_rows の i 行目を選択中。
     /// neo_filter_focus とは相互排他（どちらか一方のみ）。
     neo_sidebar_sel: Option<usize>,
+    /// NEO-UI: 右側の情報パネル（ホスト情報 + メトリクス）を表示するか。
+    /// 初期値は config.metrics.panel。非表示中はメトリクス採取も止める。
+    pub(crate) neo_info_visible: bool,
     /// 端末表示時のウィンドウサイズ（window.width/height、論理px）。
     term_size: (u32, u32),
     /// 直近にプログラムから適用したサイズ。手動リサイズと争わないための基準
@@ -306,6 +321,8 @@ impl App {
         let font = FontManager::load(config.font.as_deref(), &config.font_fallback)?;
         let px = config.font_size.max(8.0);
         let keys_cfg = config.keys.clone();
+        // config は後段で move されるため、先に値を取り出しておく。
+        let info_visible = config.metrics.enabled && config.metrics.panel;
 
         // プロファイル解決（lua + profiles.json マージ）
         let gui = mot_core::store::load_gui_profiles(&config_dir);
@@ -384,6 +401,7 @@ impl App {
             master_show: false,
             neo_filter_focus: false,
             neo_sidebar_sel: None,
+            neo_info_visible: info_visible,
             term_size,
             applied_size: None,
         })
@@ -555,8 +573,11 @@ impl App {
                     session,
                     pane,
                 } => {
+                    // メトリクス採取タスクは tab の可変借用を抜けてから起動する。
+                    let mut probe: Option<mot_ssh::ExecProbe> = None;
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.conn == conn) {
                         let session = Arc::new(*session);
+                        probe = Some(session.exec_probe());
                         let (cols, rows) = (pane_cols(&session), pane_rows(&session));
                         let pid = tab.next_pane;
                         tab.next_pane += 1;
@@ -599,6 +620,31 @@ impl App {
                                 }
                             }
                         }
+                    }
+                    // メトリクス採取を開始（設定で無効なら何もしない）。
+                    // 再接続時は Some(ctl) を差し替えることで古いタスクが drop で止まる。
+                    if let (Some(probe), Some(interval)) = (probe, self.config.metrics.interval()) {
+                        let ctl = self.connector.start_metrics(conn, probe, interval);
+                        ctl.set_paused(!self.neo_info_visible);
+                        if let Some(tab) = self.tabs.iter_mut().find(|t| t.conn == conn) {
+                            tab.metrics = None;
+                            tab.metrics_at = None;
+                            tab.metrics_unavailable = false;
+                            tab.metrics_ctl = Some(ctl);
+                        }
+                    }
+                }
+                ConnEvent::Metrics { conn, snap } => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.conn == conn) {
+                        tab.metrics = Some(snap);
+                        tab.metrics_at = Some(std::time::Instant::now());
+                        tab.metrics_unavailable = false;
+                    }
+                }
+                ConnEvent::MetricsUnavailable { conn } => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.conn == conn) {
+                        tab.metrics_unavailable = true;
+                        tab.metrics_ctl = None; // タスクは自分で終了済み
                     }
                 }
                 ConnEvent::Failed { conn, error } => {
@@ -693,6 +739,25 @@ impl App {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// メトリクス採取の一時停止状態を UI に合わせる（毎フレーム呼ぶ）。
+    ///
+    /// 情報パネルに出るのはアクティブタブの値だけなので、それ以外のタブと
+    /// パネル非表示中はリモートへコマンドを投げない。
+    fn sync_metrics_pause(&mut self) {
+        let panel_visible = self.neo_info_visible
+            && !(self.mode == Mode::Sftp && self.fm_belongs_to_active())
+            && self
+                .window
+                .as_ref()
+                .is_none_or(|w| !w.is_minimized().unwrap_or(false));
+        let active = self.active_tab;
+        for (i, tab) in self.tabs.iter().enumerate() {
+            if let Some(ctl) = &tab.metrics_ctl {
+                ctl.set_paused(!(panel_visible && i == active));
             }
         }
     }
@@ -1464,6 +1529,7 @@ impl ApplicationHandler for App {
         self.pump_conn_events();
         self.pump_panes();
         self.pump_reconnects();
+        self.sync_metrics_pause();
         // B7: ランチャー⇔端末のモード別ウィンドウサイズ
         self.sync_mode_size();
 

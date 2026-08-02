@@ -18,6 +18,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # rustfmt/clippy
     && rustup component add rustfmt clippy \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /run/sshd
+    && mkdir -p /run/sshd \
+    # xattr 非対応の FS 上でビルドすると openssh-server の postinst が落ち、
+    # 特権分離ユーザ sshd が作られないまま half-configured で残る。その状態でも
+    # sshd を起動できるよう明示的に作る（既にあれば何もしない）。
+    && (id -u sshd >/dev/null 2>&1 \
+        || useradd -r -M -d /run/sshd -s /usr/sbin/nologin sshd)
 
 WORKDIR /work
