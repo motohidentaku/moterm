@@ -295,8 +295,13 @@ async fn connect_via_proxy_command(
     };
     #[cfg(windows)]
     let mut command = {
+        // release ビルドの moterm.exe は windows_subsystem="windows" でコンソールを
+        // 持たないため、cmd /C が自前でコンソールを1枚開いてしまう。proxy_command は
+        // 接続している間ずっと生きるので、その黒い窓も出しっぱなしになる。
+        // CREATE_NO_WINDOW で抑止する（子孫の aws CLI 等にも引き継がれる）。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let mut c = tokio::process::Command::new("cmd");
-        c.arg("/C").arg(&expanded);
+        c.arg("/C").arg(&expanded).creation_flags(CREATE_NO_WINDOW);
         c
     };
     log::info!("proxy_command を起動: {expanded}");

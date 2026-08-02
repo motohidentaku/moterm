@@ -8,6 +8,7 @@
 #   ./check lint     lint / typecheck のみ
 #   ./check test     テストのみ
 #   ./check fix      自動修正（format 等）
+#   ./check win      Windows ターゲットの型チェック（cfg(windows) のコード用。数分かかる）
 #   ./check detect   検出されたスタックの表示
 set -u
 cd "$(dirname "$0")"
@@ -71,6 +72,14 @@ test_() {
   return 0
 }
 
+# `#[cfg(windows)]` のコードは Linux 上の lint/test では一度もコンパイルされない。
+# Windows 固有の分岐を触ったらこれを回す（数分かかるので既定の check には含めない）。
+win() {
+  has_rust || return 0
+  run ./docker/win-check.sh
+  return 0
+}
+
 fix() {
   if has_node; then
     [ -f node_modules/.bin/prettier ] && run npx prettier --write .
@@ -87,6 +96,7 @@ case "${1:-check}" in
   lint)   lint ;;
   test)   test_ ;;
   fix)    fix ;;
+  win)    win ;;
   check)
     lint
     test_
@@ -98,6 +108,6 @@ case "${1:-check}" in
       echo "== ./check: FAILED ==" >&2
     fi
     ;;
-  *) echo "usage: ./check [check|lint|test|fix|detect]" >&2; exit 64 ;;
+  *) echo "usage: ./check [check|lint|test|fix|win|detect]" >&2; exit 64 ;;
 esac
 exit "$FAILED"

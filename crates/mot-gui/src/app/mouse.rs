@@ -97,8 +97,17 @@ pub fn open_url(url: &str) {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return;
     }
+    // cmd はコンソールを持たない GUI プロセスから起動すると自前で1枚開く。
+    // CREATE_NO_WINDOW で黒い窓が一瞬光るのを抑える（ブラウザ自体は別プロセス）。
     #[cfg(target_os = "windows")]
-    let res = Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    let res = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+    };
     #[cfg(target_os = "macos")]
     let res = Command::new("open").arg(url).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
