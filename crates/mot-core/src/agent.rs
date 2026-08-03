@@ -114,10 +114,27 @@ struct Raw {
     notification_type: Option<String>,
 }
 
+/// `model` は送り元で形が違う。statusLine はオブジェクト
+/// （`{"id":..., "display_name":...}`）、hooks の SessionStart は
+/// 文字列（`"claude-opus-5[1m]"`）で来る。片方に決め打つと、もう片方は
+/// JSON 全体が解釈失敗して捨てられてしまう。
 #[derive(Deserialize)]
-struct RawModel {
-    display_name: Option<String>,
-    id: Option<String>,
+#[serde(untagged)]
+enum RawModel {
+    Id(String),
+    Detail {
+        display_name: Option<String>,
+        id: Option<String>,
+    },
+}
+
+impl RawModel {
+    fn name(self) -> Option<String> {
+        match self {
+            RawModel::Id(s) => Some(s),
+            RawModel::Detail { display_name, id } => display_name.or(id),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -231,7 +248,7 @@ pub fn parse_agent_json(tmux_pane: Option<String>, json: &str) -> Option<AgentEv
         session_id,
         tmux_pane,
         session_name: raw.session_name,
-        model: raw.model.and_then(|m| m.display_name.or(m.id)),
+        model: raw.model.and_then(RawModel::name),
         cwd: raw.cwd,
         version: raw.version,
         ctx_pct: ctx.as_ref().and_then(|c| c.used_percentage),
@@ -400,6 +417,17 @@ mod tests {
         assert_eq!(s.cwd.as_deref(), Some("/tmp/a;b;c"));
     }
 
+    /// statusLine の model は文字列で来ることもある（送り元のバージョン差）。
+    #[test]
+    fn model_accepts_string_form() {
+        let json = r#"{"session_id":"s","model":"claude-opus-5[1m]"}"#;
+        let ev = parse_agent_osc(&format!("-;{json}")).expect("パース成功");
+        let AgentEvent::Status(s) = ev else {
+            panic!("Status ではない: {ev:?}");
+        };
+        assert_eq!(s.model.as_deref(), Some("claude-opus-5[1m]"));
+    }
+
     #[test]
     fn hook_events_map_to_states() {
         let cases = [
@@ -413,6 +441,11 @@ mod tests {
             ),
             (
                 r#"{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}"#,
+                AgentState::Idle,
+            ),
+            // hooks の model は文字列。statusLine のオブジェクト形と混在する。
+            (
+                r#"{"session_id":"s","hook_event_name":"SessionStart","model":"claude-opus-5[1m]"}"#,
                 AgentState::Idle,
             ),
             (

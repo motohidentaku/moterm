@@ -39,13 +39,17 @@
 
 json=$(cat)
 
-# 切り分け用: MOTERM_CLAUDE_DEBUG にファイルパスを入れておくと、受け取った JSON を
-# 追記する。Claude Code がこのスクリプトを呼んでいるか（＝設定が効いているか）が分かる。
+# 切り分け用: MOTERM_CLAUDE_DEBUG にファイルパスを入れておくと、受け取った JSON と
+# /dev/tty への書き込み結果を追記する。Claude Code がこのスクリプトを呼んでいるか
+# （＝設定が効いているか）、呼ばれた上で端末まで届いたかが分かる。
 #   例: ~/.claude/settings.json の command を
 #       "env MOTERM_CLAUDE_DEBUG=/tmp/moterm-claude.log ~/.claude/moterm-claude.sh"
-if [ -n "${MOTERM_CLAUDE_DEBUG:-}" ]; then
-  printf '%s\t%s\n' "$(date '+%F %T')" "$json" >>"$MOTERM_CLAUDE_DEBUG" 2>/dev/null || true
-fi
+debug_log() {
+  [ -n "${MOTERM_CLAUDE_DEBUG:-}" ] || return 0
+  printf '%s\t%s\n' "$(date '+%F %T')" "$1" >>"$MOTERM_CLAUDE_DEBUG" 2>/dev/null || true
+}
+
+debug_log "$json"
 
 # 制御文字を変数に持つ（printf の書式解釈で JSON を壊さないため、出力は %s で行う）
 ESC=$(printf '\033')
@@ -59,10 +63,20 @@ payload="${ESC}]7777;${pane};${json}${BEL}"
 if [ -n "${TMUX:-}" ]; then
   # tmux の DCS passthrough。包む対象の ESC を二重にするのが規則。
   payload="${ESC}Ptmux;${ESC}${payload}${ESC}\\"
+  in_tmux=yes
+else
+  in_tmux=no
 fi
 
 # /dev/tty が無い実行形態（claude -p、CI 等）では黙って諦める。
-printf '%s' "$payload" >/dev/tty 2>/dev/null || true
+# 書けたかどうかは切り分けの分岐点なので、デバッグ時だけ結果を残す。
+# リダイレクトは左から適用されるので 2>/dev/null を先に置く
+# （/dev/tty が開けないときのエラーが素通しで stderr へ出るのを防ぐ）。
+if printf '%s' "$payload" 2>/dev/null >/dev/tty; then
+  debug_log "-> /dev/tty へ書けた（${#payload} 文字 tmux=${in_tmux} pane=$pane）"
+else
+  debug_log "-> /dev/tty へ書けなかった（tty が無い / 権限）"
+fi
 
 # 引数があれば既存の statusLine コマンドへ委譲する（stdin は同じ JSON）。
 # hooks から呼ぶときは引数なし = stdout に何も出さない

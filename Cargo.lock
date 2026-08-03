@@ -1984,7 +1984,7 @@ dependencies = [
 
 [[package]]
 name = "mot-core"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2003,7 +2003,7 @@ dependencies = [
 
 [[package]]
 name = "mot-gui"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2031,7 +2031,7 @@ dependencies = [
 
 [[package]]
 name = "mot-ssh"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -2046,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "mot-term"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "base64",
  "log",
