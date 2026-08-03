@@ -68,14 +68,44 @@ else
   in_tmux=no
 fi
 
-# /dev/tty が無い実行形態（claude -p、CI 等）では黙って諦める。
+# 書き込み先の端末を決める。
+#
+# Claude Code は hooks / statusLine の子プロセスを制御端末なしで起動することが
+# あり、その場合 /dev/tty は開けない（open が ENXIO）。そこで親を遡って
+# Claude Code 本体が乗っている端末（/dev/pts/N）を見つけ、そこへ直接書く。
+# 同じユーザの端末なので書き込み権限はある。
+resolve_parent_tty() {
+  pid=${PPID:-0}
+  hops=0
+  while [ "$pid" -gt 1 ] && [ "$hops" -lt 12 ]; do
+    t=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' \n')
+    case "$t" in
+      # Linux は pts/3、macOS は ttys003。端末なしは ?? や - で返る。
+      pts/* | ttys* | tty[0-9]*)
+        printf '/dev/%s' "$t"
+        return 0
+        ;;
+    esac
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' \n')
+    [ -n "$pid" ] || return 1
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
 # 書けたかどうかは切り分けの分岐点なので、デバッグ時だけ結果を残す。
 # リダイレクトは左から適用されるので 2>/dev/null を先に置く
-# （/dev/tty が開けないときのエラーが素通しで stderr へ出るのを防ぐ）。
+# （端末を開けないときのエラーが素通しで stderr へ出るのを防ぐ）。
 if printf '%s' "$payload" 2>/dev/null >/dev/tty; then
   debug_log "-> /dev/tty へ書けた（${#payload} 文字 tmux=${in_tmux} pane=$pane）"
 else
-  debug_log "-> /dev/tty へ書けなかった（tty が無い / 権限）"
+  target=$(resolve_parent_tty || true)
+  if [ -n "$target" ] && printf '%s' "$payload" 2>/dev/null >"$target"; then
+    debug_log "-> $target へ書けた（/dev/tty は開けず ${#payload} 文字 tmux=${in_tmux} pane=$pane）"
+  else
+    # /dev/tty も親の端末も駄目な実行形態（claude -p、CI 等）では黙って諦める。
+    debug_log "-> 端末へ書けなかった（/dev/tty 不可、親の端末も見つからず: '${target:-なし}'）"
+  fi
 fi
 
 # 引数があれば既存の statusLine コマンドへ委譲する（stdin は同じ JSON）。

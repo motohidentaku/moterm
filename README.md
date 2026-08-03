@@ -178,6 +178,18 @@ tmux show -g allow-passthrough
 （既定）で起動しておくと、OSC は届いたが JSON を解釈できなかった場合に警告が出る。
 `RUST_LOG=mot_gui=debug` にすると受信した1件ごとにログが出る。
 
+デバッグログには受け取った JSON に続けて、どの端末へ書けたかも残る。
+
+```text
+2026-08-03 13:20:31	{"session_id":"d1ecd6ce-...","hook_event_name":"UserPromptSubmit",...}
+2026-08-03 13:20:31	-> /dev/pts/3 へ書けた（/dev/tty は開けず 1284 文字 tmux=no pane=-）
+```
+
+Claude Code は hooks / statusLine の子プロセスを制御端末なしで起動することがあり、
+その環境では `/dev/tty` が開けない。スクリプトは親プロセスを遡って Claude Code 本体が
+乗っている端末（`/dev/pts/N`）を探し、そこへ書き込む。`端末へ書けなかった` と出る場合は
+`ps` が使えないか、Claude Code 自体が端末上で動いていない（`claude -p`、CI 等）。
+
 Claude Code 側は `/hooks` で登録内容を確認でき、`claude --debug` で発火の様子が見られる。
 `~/.claude/settings.json` の hooks はファイル監視で自動反映されるので**再起動は不要**
 （statusLine は次にアシスタントの応答が返ったときに走る）。JSON の構文を間違えていると
