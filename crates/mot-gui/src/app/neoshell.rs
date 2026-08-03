@@ -1892,8 +1892,49 @@ fn agent_state_color(state: AgentState) -> Pixel {
     match state {
         AgentState::Working => nc::CYAN,
         AgentState::Waiting => nc::AMBER,
+        AgentState::Done => nc::GREEN,
         AgentState::Idle => nc::TEXT_SUB,
     }
+}
+
+/// 状態バッジの短いラベル。
+fn agent_state_label(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Working => "WORKING",
+        AgentState::Waiting => "NEEDS INPUT",
+        AgentState::Done => "DONE",
+        AgentState::Idle => "IDLE",
+    }
+}
+
+/// 1行に収まるところで折り返して最大 `max_lines` 行に切る。
+/// 溢れたぶんは最終行の末尾を `…` にする（プロンプトは改行を含むので空白へ潰す）。
+fn wrap_lines(nf: &mut NeoFonts, text: &str, max_w: i32, px: f32, max_lines: usize) -> Vec<String> {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() || max_w <= 0 || max_lines == 0 {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    // 日本語には空白が無いので単語単位では折れない。1文字ずつ詰めて幅で折る。
+    for ch in flat.chars() {
+        let mut next = cur.clone();
+        next.push(ch);
+        if nf.measure(Face::Ui, &next, px) > max_w && !cur.is_empty() {
+            lines.push(std::mem::take(&mut cur));
+            if lines.len() == max_lines {
+                // 入り切らなかったぶんがあるので最終行を省略記号付きにする
+                let last = lines.pop().unwrap_or_default();
+                lines.push(ellipsize_right(nf, &format!("{last}…"), max_w, px));
+                return lines;
+            }
+        }
+        cur.push(ch);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
 }
 
 /// 情報パネルの AGENT セクション。戻り値は次のセクションの開始 y。
@@ -1911,6 +1952,8 @@ fn draw_agent_section(
 ) -> i32 {
     /// パネルに並べる最大件数（超過分は "+N more"）
     const SHOWN: usize = 3;
+    /// 直近プロンプトに割く行数
+    const PROMPT_LINES: usize = 2;
 
     let heading = if agents.len() > 1 {
         format!("AGENT · {} SESSIONS", agents.len())
@@ -1960,7 +2003,19 @@ fn draw_agent_section(
         }
         y += si(14.0, sc);
 
-        // 2行目: コンテキスト使用率のバー（無ければ飛ばす）
+        // 2行目: 状態バッジ（ドットの色だけでは 4 値を見分けにくいので文字でも出す）
+        nf.draw(
+            fb,
+            Face::Ui,
+            agent_state_label(a.state),
+            x,
+            y + si(8.0, sc),
+            9.0 * sc,
+            col,
+        );
+        y += si(12.0, sc);
+
+        // コンテキスト使用率のバー（無ければ飛ばす）
         if let Some(pct) = a.ctx_pct {
             let bar_col = gauge_color(pct, nc::CYAN);
             nf.draw(
@@ -2033,6 +2088,31 @@ fn draw_agent_section(
             y += si(13.0, sc);
         }
 
+        // キャッシュ（直近のやり取りぶん。累計は Claude Code が出してくれない）
+        if let Some(cache) = a.cache_tokens {
+            nf.draw(
+                fb,
+                Face::Ui,
+                "cache",
+                x,
+                y + si(8.0, sc),
+                9.5 * sc,
+                nc::TEXT_SUB,
+            );
+            let v = human_tokens(cache);
+            let w = nf.measure(Face::Mono, &v, 9.5 * sc);
+            nf.draw(
+                fb,
+                Face::Mono,
+                &v,
+                x + inner_w - w,
+                y + si(8.0, sc),
+                9.5 * sc,
+                nc::GREEN,
+            );
+            y += si(13.0, sc);
+        }
+
         // 実行中のツール（PreToolUse 〜 PostToolUse の間だけ出る）
         if let Some(tool) = &a.tool {
             nf.draw_icon(fb, icon::ZAP, x, y, 8.0 * sc, col);
@@ -2047,6 +2127,28 @@ fn draw_agent_section(
                 col,
             );
             y += si(13.0, sc);
+        }
+
+        // 最後にユーザが送った依頼（UserPromptSubmit 由来）。長文・複数行が普通に
+        // 来るので、空白へ潰して 2 行までに畳む。
+        if let Some(prompt) = &a.prompt {
+            let lines = wrap_lines(nf, prompt, inner_w, 9.5 * sc, PROMPT_LINES);
+            if !lines.is_empty() {
+                nf.draw(
+                    fb,
+                    Face::Ui,
+                    "LAST PROMPT",
+                    x,
+                    y + si(8.0, sc),
+                    9.0 * sc,
+                    nc::TEXT_SUB,
+                );
+                y += si(12.0, sc);
+                for line in lines {
+                    nf.draw(fb, Face::Ui, &line, x, y + si(8.0, sc), 9.5 * sc, nc::TEXT);
+                    y += si(12.0, sc);
+                }
+            }
         }
         y += si(6.0, sc);
     }

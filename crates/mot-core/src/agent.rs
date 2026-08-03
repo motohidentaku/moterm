@@ -29,7 +29,9 @@ pub enum AgentState {
     Working,
     /// ユーザの操作待ち（権限プロンプト等）
     Waiting,
-    /// 応答が終わって入力待ち
+    /// 直前の依頼をやり終えた（`Stop`）
+    Done,
+    /// まだ何も依頼されていない（`SessionStart` 直後）
     #[default]
     Idle,
 }
@@ -50,6 +52,9 @@ pub struct AgentStatus {
     pub ctx_pct: Option<f32>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// 直近のやり取りでキャッシュに触れたトークン
+    /// （`current_usage` の作成ぶん + 読み出しぶん。セッション累計は届かない）
+    pub cache_tokens: Option<u64>,
     pub ctx_size: Option<u64>,
     pub cost_usd: Option<f64>,
     pub duration_ms: Option<u64>,
@@ -64,6 +69,8 @@ pub struct AgentStatus {
     /// 実行中のツール名（hooks 由来。statusLine では更新しない）
     pub state: AgentState,
     pub tool: Option<String>,
+    /// 最後にユーザが送ったプロンプト（`UserPromptSubmit` 由来）
+    pub prompt: Option<String>,
 }
 
 /// OSC 7777 の1件。
@@ -78,6 +85,8 @@ pub enum AgentEvent {
         state: AgentState,
         /// Some(None) は「ツール実行が終わったのでクリア」、None は「変更しない」
         tool: Option<Option<String>>,
+        /// 最後のユーザ入力（`UserPromptSubmit` のときだけ Some）
+        prompt: Option<String>,
     },
     /// セッション終了（一覧から消す）
     End { session_id: String },
@@ -112,6 +121,8 @@ struct Raw {
     hook_event_name: Option<String>,
     tool_name: Option<String>,
     notification_type: Option<String>,
+    /// `UserPromptSubmit` が渡してくるユーザの入力そのもの
+    prompt: Option<String>,
 }
 
 /// `model` は送り元で形が違う。statusLine はオブジェクト
@@ -162,6 +173,28 @@ struct RawCtx {
     total_output_tokens: Option<u64>,
     context_window_size: Option<u64>,
     used_percentage: Option<f32>,
+    /// 直近のやり取りぶんの内訳（セッション開始直後は null）
+    current_usage: Option<RawUsage>,
+}
+
+#[derive(Deserialize)]
+struct RawUsage {
+    cache_creation_input_tokens: Option<u64>,
+    cache_read_input_tokens: Option<u64>,
+}
+
+impl RawUsage {
+    /// キャッシュに触れたトークン。作成ぶんと読み出しぶんは片方だけ立つことが
+    /// 多いので合算して1つの数字にする。
+    fn cache_tokens(&self) -> Option<u64> {
+        match (
+            self.cache_creation_input_tokens,
+            self.cache_read_input_tokens,
+        ) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -198,30 +231,36 @@ pub fn parse_agent_json(tmux_pane: Option<String>, json: &str) -> Option<AgentEv
                 tmux_pane,
                 state: AgentState::Working,
                 tool: Some(None),
+                // 依頼の本文はこのイベントにしか載らないので、ここで拾って保持する。
+                prompt: raw.prompt.clone(),
             }),
             "PreToolUse" => Some(AgentEvent::State {
                 session_id,
                 tmux_pane,
                 state: AgentState::Working,
                 tool: Some(raw.tool_name.clone()),
+                prompt: None,
             }),
             "PostToolUse" => Some(AgentEvent::State {
                 session_id,
                 tmux_pane,
                 state: AgentState::Working,
                 tool: Some(None),
+                prompt: None,
             }),
             "Stop" => Some(AgentEvent::State {
                 session_id,
                 tmux_pane,
-                state: AgentState::Idle,
+                state: AgentState::Done,
                 tool: Some(None),
+                prompt: None,
             }),
             "SessionStart" => Some(AgentEvent::State {
                 session_id,
                 tmux_pane,
                 state: AgentState::Idle,
                 tool: Some(None),
+                prompt: None,
             }),
             // 権限プロンプトだけを「待ち」とみなす。他の通知は状態を変えない。
             "Notification" => {
@@ -231,6 +270,7 @@ pub fn parse_agent_json(tmux_pane: Option<String>, json: &str) -> Option<AgentEv
                         tmux_pane,
                         state: AgentState::Waiting,
                         tool: None,
+                        prompt: None,
                     })
                 } else {
                     None
@@ -254,6 +294,10 @@ pub fn parse_agent_json(tmux_pane: Option<String>, json: &str) -> Option<AgentEv
         ctx_pct: ctx.as_ref().and_then(|c| c.used_percentage),
         input_tokens: ctx.as_ref().and_then(|c| c.total_input_tokens),
         output_tokens: ctx.as_ref().and_then(|c| c.total_output_tokens),
+        cache_tokens: ctx
+            .as_ref()
+            .and_then(|c| c.current_usage.as_ref())
+            .and_then(RawUsage::cache_tokens),
         ctx_size: ctx.as_ref().and_then(|c| c.context_window_size),
         cost_usd: cost.as_ref().and_then(|c| c.total_cost_usd),
         duration_ms: cost.as_ref().and_then(|c| c.total_duration_ms),
@@ -265,10 +309,11 @@ pub fn parse_agent_json(tmux_pane: Option<String>, json: &str) -> Option<AgentEv
             .and_then(|w| w.repo.as_ref())
             .and_then(|r| r.name.clone()),
         effort: raw.effort.and_then(|e| e.level),
-        // state/tool は hooks が持つ。ここでは既定値を入れておき、
+        // state/tool/prompt は hooks が持つ。ここでは既定値を入れておき、
         // 受け取り側が既存エントリの値を引き継ぐ。
         state: AgentState::default(),
         tool: None,
+        prompt: None,
     })))
 }
 
@@ -313,11 +358,12 @@ impl AgentSessions {
                 return;
             }
             AgentEvent::Status(mut snap) => {
-                // 状態と実行中ツールは hooks 側が持つので既存値を引き継ぐ。
+                // 状態・実行中ツール・直近プロンプトは hooks 側が持つので既存値を引き継ぐ。
                 if let Some(i) = pos {
                     let old = self.list.remove(i);
                     snap.state = old.state;
                     snap.tool = old.tool;
+                    snap.prompt = old.prompt;
                 }
                 self.list.insert(0, *snap);
             }
@@ -325,6 +371,7 @@ impl AgentSessions {
                 tmux_pane,
                 state,
                 tool,
+                prompt,
                 ..
             } => {
                 let mut entry = match pos {
@@ -338,6 +385,10 @@ impl AgentSessions {
                 entry.state = state;
                 if let Some(t) = tool {
                     entry.tool = t;
+                }
+                // 次の依頼が来るまで前の依頼を出し続ける（None では消さない）。
+                if prompt.is_some() {
+                    entry.prompt = prompt;
                 }
                 if entry.tmux_pane.is_none() {
                     entry.tmux_pane = tmux_pane;
@@ -376,7 +427,13 @@ mod tests {
         "total_input_tokens": 15500,
         "total_output_tokens": 1200,
         "context_window_size": 200000,
-        "used_percentage": 8
+        "used_percentage": 8,
+        "current_usage": {
+          "input_tokens": 2,
+          "output_tokens": 90,
+          "cache_creation_input_tokens": 3400,
+          "cache_read_input_tokens": 12000
+        }
       },
       "exceeds_200k_tokens": false,
       "effort": { "level": "high" }
@@ -395,6 +452,8 @@ mod tests {
         assert_eq!(s.ctx_pct, Some(8.0));
         assert_eq!(s.input_tokens, Some(15500));
         assert_eq!(s.output_tokens, Some(1200));
+        // 作成ぶん + 読み出しぶん
+        assert_eq!(s.cache_tokens, Some(15400));
         assert_eq!(s.cost_usd, Some(0.5));
         assert_eq!(s.worktree.as_deref(), Some("feature-xyz"));
         assert_eq!(s.repo.as_deref(), Some("app"));
@@ -437,7 +496,7 @@ mod tests {
             ),
             (
                 r#"{"session_id":"s","hook_event_name":"Stop"}"#,
-                AgentState::Idle,
+                AgentState::Done,
             ),
             (
                 r#"{"session_id":"s","hook_event_name":"SessionStart","source":"startup"}"#,
@@ -460,6 +519,43 @@ mod tests {
                 other => panic!("State ではない: {other:?}"),
             }
         }
+    }
+
+    /// 依頼の本文は UserPromptSubmit にしか載らないので、以降のイベントでも保持する。
+    #[test]
+    fn last_prompt_is_kept_until_the_next_one() {
+        let mut s = AgentSessions::default();
+        s.apply(
+            parse_agent_osc(
+                r#"-;{"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":"テストを書いて"}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            s.latest().unwrap().prompt.as_deref(),
+            Some("テストを書いて")
+        );
+
+        // ツール実行や statusLine の更新では消えない
+        s.apply(
+            parse_agent_osc(
+                r#"-;{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash"}"#,
+            )
+            .unwrap(),
+        );
+        s.apply(parse_agent_osc(r#"-;{"session_id":"s","model":"Opus"}"#).unwrap());
+        let latest = s.latest().unwrap();
+        assert_eq!(latest.prompt.as_deref(), Some("テストを書いて"));
+        assert_eq!(latest.model.as_deref(), Some("Opus"));
+
+        // 次の依頼で置き換わる
+        s.apply(
+            parse_agent_osc(
+                r#"-;{"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":"次の依頼"}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(s.latest().unwrap().prompt.as_deref(), Some("次の依頼"));
     }
 
     #[test]
