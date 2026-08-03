@@ -39,6 +39,14 @@
 
 json=$(cat)
 
+# 切り分け用: MOTERM_CLAUDE_DEBUG にファイルパスを入れておくと、受け取った JSON を
+# 追記する。Claude Code がこのスクリプトを呼んでいるか（＝設定が効いているか）が分かる。
+#   例: ~/.claude/settings.json の command を
+#       "env MOTERM_CLAUDE_DEBUG=/tmp/moterm-claude.log ~/.claude/moterm-claude.sh"
+if [ -n "${MOTERM_CLAUDE_DEBUG:-}" ]; then
+  printf '%s\t%s\n' "$(date '+%F %T')" "$json" >>"$MOTERM_CLAUDE_DEBUG" 2>/dev/null || true
+fi
+
 # 制御文字を変数に持つ（printf の書式解釈で JSON を壊さないため、出力は %s で行う）
 ESC=$(printf '\033')
 BEL=$(printf '\007')

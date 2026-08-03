@@ -2518,7 +2518,8 @@ fn draw_sidebar(
                     s.x + si(30.0, sc),
                     y + si(21.0, sc),
                     9.0 * sc,
-                    nc::TEXT_DIM,
+                    // グループ見出しと同じ明るさ（TEXT_DIM だと暗すぎて読めなかった）
+                    nc::TEXT_SUB,
                 );
             }
         }

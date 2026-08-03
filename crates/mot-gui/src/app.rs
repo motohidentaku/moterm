@@ -724,10 +724,23 @@ impl App {
                             mot_term::TermEvent::Clipboard(text) => set_clipboard(&text),
                             // OSC 7777: リモートの Claude Code の状況。
                             // 解釈できないペイロードは捨てる（他端末向けの独自 OSC が
-                            // 紛れ込んでも害が出ないように）。
+                            // 紛れ込んでも害が出ないように）。ただし切り分けができるよう
+                            // 捨てたことは warn で残す（届いているのに出ない、を判別する）。
                             mot_term::TermEvent::Agent(payload) => {
-                                if let Some(ev) = mot_core::agent::parse_agent_osc(&payload) {
-                                    pane.agents.apply(ev);
+                                match mot_core::agent::parse_agent_osc(&payload) {
+                                    Some(ev) => {
+                                        log::debug!(
+                                            "pane {pane_id}: agent OSC を受信: session={} {ev:?}",
+                                            ev.session_id()
+                                        );
+                                        pane.agents.apply(ev);
+                                    }
+                                    None => {
+                                        let head: String = payload.chars().take(200).collect();
+                                        log::warn!(
+                                            "pane {pane_id}: agent OSC を解釈できません（session_id が無い/JSON 不正）: {head}"
+                                        );
+                                    }
                                 }
                             }
                             _ => {}

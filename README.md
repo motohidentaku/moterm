@@ -138,17 +138,50 @@ statusLine が渡してくる JSON を**加工せず** OSC 7777 で `/dev/tty` �
 "statusLine": { "type": "command", "command": "~/.claude/moterm-claude.sh ~/.claude/statusline.sh" }
 ```
 
-**tmux 越しに使う場合**は接続先の `~/.tmux.conf` に次が必要（tmux は未知の OSC を捨てるため）:
+**tmux 越しに使う場合**は接続先で passthrough を有効にする（tmux は未知の OSC を捨てるため）:
 
+```sh
+echo 'set -g allow-passthrough on' >> ~/.tmux.conf   # 次回の tmux 起動から
+tmux set -g allow-passthrough on                     # 動作中の tmux へ即時反映
+tmux show -g allow-passthrough                       # 確認
 ```
-set -g allow-passthrough on
-```
+
+`set -g ...` は tmux のコマンド。シェルにそのまま打つと `set: -g: invalid option` になる
+（`tmux` を前に付けるか、tmux 内で `Ctrl+b :` のプロンプトから実行する）。
 
 複数の Claude Code を tmux で並べると 1 本の PTY に混ざって流れてくるが、moterm は
 `session_id` で分けて更新の新しい順に最大3件（保持は8件）表示する。ただし **どの tmux pane を
 見ているかは moterm には分からない**ため、表示されるのは「最後に動いたセッション」から順になる。
 
 状態ドットの色: シアン = 応答生成中／ツール実行中、琥珀 = 権限プロンプト待ち、グレー = 入力待ち。
+
+#### 出ないときの切り分け
+
+上流から順に確かめる。
+
+```sh
+# 1) moterm 側が受け取れるか（接続先のシェルで直接叩く）
+printf '\033]7777;-;{"session_id":"t","session_name":"manual test","model":{"display_name":"Test"}}\007'
+
+# 2) スクリプト単体が動くか
+echo '{"session_id":"s","session_name":"script test"}' | ~/.claude/moterm-claude.sh
+
+# 3) Claude Code がスクリプトを呼んでいるか（settings.json の command を差し替えて実行）
+#    "command": "env MOTERM_CLAUDE_DEBUG=/tmp/moterm-claude.log ~/.claude/moterm-claude.sh"
+tail -f /tmp/moterm-claude.log
+
+# 4) tmux 経由なら passthrough が有効か
+tmux show -g allow-passthrough
+```
+
+1 で出るなら moterm 側は正常で、原因は Claude Code の設定側。moterm を `RUST_LOG=warn`
+（既定）で起動しておくと、OSC は届いたが JSON を解釈できなかった場合に警告が出る。
+`RUST_LOG=mot_gui=debug` にすると受信した1件ごとにログが出る。
+
+Claude Code 側は `/hooks` で登録内容を確認でき、`claude --debug` で発火の様子が見られる。
+`~/.claude/settings.json` の hooks はファイル監視で自動反映されるので**再起動は不要**
+（statusLine は次にアシスタントの応答が返ったときに走る）。JSON の構文を間違えていると
+設定ごと読まれないので、まず `/hooks` に出ているかを見るとよい。
 
 ### 主なキー操作（F1〜F6・タブ切替・コピペ等の16アクションは `config.keys` で変更可）
 
