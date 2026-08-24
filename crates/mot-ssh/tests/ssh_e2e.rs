@@ -171,6 +171,109 @@ async fn sftp_roundtrip() {
     sftp.remove_file(&remote).await.expect("cleanup");
 }
 
+/// ディレクトリの再帰転送: 上り（mkdir_p + upload）→ walk で列挙 →
+/// 下り（download）→ remove_dir_all で後始末、までを実サーバで通す。
+#[tokio::test]
+async fn sftp_recursive_dir_roundtrip() {
+    let Some(params) = e2e_params(AuthMethod::Publickey {
+        key: env("MOTERM_SSH_KEY").unwrap_or_default(),
+    }) else {
+        return;
+    };
+    let session = SshSession::connect(params, accept_all(), None, AuthCallbacks::none())
+        .await
+        .expect("connect");
+    let sftp = session.open_sftp().await.expect("sftp");
+
+    let base = env("MOTERM_E2E_DIR").unwrap_or_else(|| "/tmp".into());
+    let remote_root = format!("{base}/moterm_sftp_tree");
+    let _ = sftp.remove_dir_all(&remote_root).await; // 前回の残骸
+
+    // ローカルに tree/{a.txt, sub/b.txt, sub/deep/c.txt, empty/} を作る
+    let local_root = std::env::temp_dir().join("moterm_sftp_tree_src");
+    let _ = std::fs::remove_dir_all(&local_root);
+    std::fs::create_dir_all(local_root.join("sub").join("deep")).unwrap();
+    std::fs::create_dir_all(local_root.join("empty")).unwrap();
+    std::fs::write(local_root.join("a.txt"), b"A").unwrap();
+    std::fs::write(local_root.join("sub").join("b.txt"), b"BB").unwrap();
+    std::fs::write(local_root.join("sub").join("deep").join("c.txt"), b"CCC").unwrap();
+
+    // 上り: 親を先に作りながら転送（GUI 側のジョブ順と同じ手順）
+    sftp.mkdir_p(&remote_root).await.expect("mkdir root");
+    for rel in ["empty", "sub", "sub/deep"] {
+        sftp.mkdir_p(&format!("{remote_root}/{rel}"))
+            .await
+            .unwrap_or_else(|e| panic!("mkdir {rel}: {e}"));
+    }
+    for rel in ["a.txt", "sub/b.txt", "sub/deep/c.txt"] {
+        let local = rel.split('/').fold(local_root.clone(), |p, c| p.join(c));
+        sftp.upload(&local, &format!("{remote_root}/{rel}"))
+            .await
+            .unwrap_or_else(|e| panic!("upload {rel}: {e}"));
+    }
+    assert!(sftp.is_dir(&remote_root).await);
+    assert!(sftp.is_dir(&format!("{remote_root}/empty")).await);
+
+    // walk: 中身をすべて拾い、親が中身より先に並ぶ
+    let entries = sftp.walk(&remote_root).await.expect("walk");
+    let mut rels: Vec<String> = entries.iter().map(|e| e.rel.clone()).collect();
+    rels.sort();
+    assert_eq!(
+        rels,
+        vec![
+            "a.txt",
+            "empty",
+            "sub",
+            "sub/b.txt",
+            "sub/deep",
+            "sub/deep/c.txt"
+        ]
+    );
+    let order: Vec<&str> = entries.iter().map(|e| e.rel.as_str()).collect();
+    let pos = |n: &str| order.iter().position(|r| *r == n).unwrap();
+    assert!(pos("sub") < pos("sub/b.txt"));
+    assert!(pos("sub") < pos("sub/deep"));
+    assert!(pos("sub/deep") < pos("sub/deep/c.txt"));
+    for e in &entries {
+        assert_eq!(
+            e.is_dir,
+            matches!(e.rel.as_str(), "empty" | "sub" | "sub/deep"),
+            "種別が違う: {}",
+            e.rel
+        );
+    }
+
+    // 下り: 別ディレクトリへ落として中身を突き合わせる
+    let dst = std::env::temp_dir().join("moterm_sftp_tree_dst");
+    let _ = std::fs::remove_dir_all(&dst);
+    std::fs::create_dir_all(&dst).unwrap();
+    for e in &entries {
+        let local = e.rel.split('/').fold(dst.clone(), |p, c| p.join(c));
+        if e.is_dir {
+            std::fs::create_dir_all(&local).unwrap();
+        } else {
+            sftp.download(&format!("{remote_root}/{}", e.rel), &local)
+                .await
+                .unwrap_or_else(|err| panic!("download {}: {err}", e.rel));
+        }
+    }
+    assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"A");
+    assert_eq!(std::fs::read(dst.join("sub").join("b.txt")).unwrap(), b"BB");
+    assert_eq!(
+        std::fs::read(dst.join("sub").join("deep").join("c.txt")).unwrap(),
+        b"CCC"
+    );
+    assert!(dst.join("empty").is_dir());
+
+    // 後始末: 中身入りディレクトリを一括削除できる
+    sftp.remove_dir_all(&remote_root)
+        .await
+        .expect("remove_dir_all");
+    assert!(!sftp.exists(&remote_root).await.unwrap());
+    let _ = std::fs::remove_dir_all(&local_root);
+    let _ = std::fs::remove_dir_all(&dst);
+}
+
 #[tokio::test]
 async fn exec_captures_stdout() {
     let Some(params) = e2e_params(AuthMethod::Publickey {

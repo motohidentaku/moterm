@@ -497,6 +497,10 @@ impl App {
 
     /// 転送をワーカータスクへ投げ、進捗/完了を ConnEvent で受ける（UI 非ブロック）。
     /// 単発転送・ミラーの共通経路。転送中の再入はブロックする。
+    ///
+    /// `names` にディレクトリが含まれる場合は中身を再帰的に展開して転送する
+    /// （空ディレクトリも宛先に作る）。進捗の分母はファイル・ディレクトリを
+    /// 合わせた展開後の件数。
     fn fm_spawn_transfer(&mut self, from: Side, names: Vec<String>) {
         let Some(fm) = self.fm.as_ref() else { return };
         if names.is_empty() {
@@ -512,56 +516,78 @@ impl App {
             self.fm_set_status("(not connected)");
             return;
         };
-        let count = names.len();
-        // 0% を即時表示（最初の進捗イベントを待たない）
+        // 0% を即時表示（最初の進捗イベントを待たない）。件数は再帰展開後に補正される。
         if let Some(f) = self.fm.as_mut() {
             f.progress = Some(crate::sftpview::FmProgress {
                 name: names[0].clone(),
                 done: 0,
                 total: 0,
                 index: 1,
-                count,
+                count: names.len(),
             });
         }
         let tx = self.connector.sender();
         self.connector.runtime().spawn(async move {
-            let mut failed = 0usize;
-            match session.open_sftp().await {
-                Err(_) => failed = count,
-                Ok(sftp) => {
-                    for (i, name) in names.iter().enumerate() {
-                        let local_path = PathBuf::from(&local_cwd).join(name);
-                        let remote_path = crate::sftpview::remote_join(&remote_cwd, name);
-                        let txp = tx.clone();
-                        let pname = name.clone();
-                        let mut progress = move |done: u64, total: u64| {
-                            let _ = txp.send(ConnEvent::TransferProgress {
-                                name: pname.clone(),
-                                done,
-                                total,
-                                index: i + 1,
-                                count,
-                            });
-                        };
-                        let ok = match from {
-                            Side::Local => sftp
-                                .upload_with_progress(&local_path, &remote_path, &mut progress)
-                                .await
-                                .is_ok(),
-                            Side::Remote => sftp
-                                .download_with_progress(&remote_path, &local_path, &mut progress)
-                                .await
-                                .is_ok(),
-                        };
-                        if !ok {
-                            failed += 1;
-                        }
+            let sftp = match session.open_sftp().await {
+                Ok(s) => s,
+                Err(_) => {
+                    let _ = tx.send(ConnEvent::TransferDone {
+                        from,
+                        total: names.len(),
+                        failed: names.len(),
+                    });
+                    return;
+                }
+            };
+            // 1) ディレクトリを再帰展開して平坦なジョブ列にする（親が中身より先）。
+            let (jobs, plan_failed) =
+                plan_transfer_jobs(&sftp, from, &local_cwd, &remote_cwd, &names).await;
+            let count = jobs.len();
+            // 2) 先頭から順に転送。ディレクトリは宛先に作るだけ。
+            let mut failed = plan_failed;
+            for (i, job) in jobs.iter().enumerate() {
+                let local_path = local_join(Path::new(&local_cwd), &job.rel);
+                let remote_path = crate::sftpview::remote_join(&remote_cwd, &job.rel);
+                let txp = tx.clone();
+                let pname = job.rel.clone();
+                let mut progress = move |done: u64, total: u64| {
+                    let _ = txp.send(ConnEvent::TransferProgress {
+                        name: pname.clone(),
+                        done,
+                        total,
+                        index: i + 1,
+                        count,
+                    });
+                };
+                if job.is_dir {
+                    // ディレクトリ自体はバイト数を持たないので 0/0 で1件ぶん進める
+                    progress(0, 0);
+                    let ok = match from {
+                        Side::Local => sftp.mkdir_p(&remote_path).await.is_ok(),
+                        Side::Remote => std::fs::create_dir_all(&local_path).is_ok(),
+                    };
+                    if !ok {
+                        failed += 1;
                     }
+                    continue;
+                }
+                let ok = match from {
+                    Side::Local => sftp
+                        .upload_with_progress(&local_path, &remote_path, &mut progress)
+                        .await
+                        .is_ok(),
+                    Side::Remote => sftp
+                        .download_with_progress(&remote_path, &local_path, &mut progress)
+                        .await
+                        .is_ok(),
+                };
+                if !ok {
+                    failed += 1;
                 }
             }
             let _ = tx.send(ConnEvent::TransferDone {
                 from,
-                total: count,
+                total: count + plan_failed,
                 failed,
             });
         });
@@ -630,11 +656,24 @@ impl App {
     pub(super) fn fm_begin_delete(&mut self) {
         let Some(fm) = self.fm.as_ref() else { return };
         let side = fm.active;
-        // マークがあれば一括削除（ファイルのみ。1件でもマークを優先＝転送と対称）。
-        // 無ければ選択1件（ディレクトリ可）。
+        // マークがあれば一括削除（1件でもマークを優先＝転送と対称）。
+        // 無ければ選択1件。どちらもディレクトリは中身ごと消える。
         let marked = fm.active_pane().marked_names();
         if !marked.is_empty() {
-            let msg = format!("{} {} file(s)?", tr(self.lang, "delete"), marked.len());
+            let dirs = marked
+                .iter()
+                .filter(|n| fm.active_pane().is_dir_named(n))
+                .count();
+            let msg = if dirs > 0 {
+                format!(
+                    "{} {} item(s), {} dir(s) recursive?",
+                    tr(self.lang, "delete"),
+                    marked.len(),
+                    dirs
+                )
+            } else {
+                format!("{} {} file(s)?", tr(self.lang, "delete"), marked.len())
+            };
             if let Some(f) = self.fm.as_mut() {
                 f.confirm = Some(FmConfirm {
                     message: msg,
@@ -653,7 +692,12 @@ impl App {
             return;
         }
         let (name, is_dir) = (sel.name.clone(), sel.is_dir);
-        let msg = format!("{} '{}'", tr(self.lang, "delete"), name);
+        // ディレクトリは中身ごと消えるので、確認文でそれを明示する。
+        let msg = if is_dir {
+            format!("{} '{}' (recursive)", tr(self.lang, "delete"), name)
+        } else {
+            format!("{} '{}'", tr(self.lang, "delete"), name)
+        };
         if let Some(f) = self.fm.as_mut() {
             f.confirm = Some(FmConfirm {
                 message: msg,
@@ -871,7 +915,8 @@ impl App {
                     .block_on(async move {
                         let sftp = session.open_sftp().await.ok()?;
                         if is_dir {
-                            sftp.remove_dir(&path).await.ok()
+                            // ローカル側の remove_dir_all と揃える（確認済み前提）
+                            sftp.remove_dir_all(&path).await.ok()
                         } else {
                             sftp.remove_file(&path).await.ok()
                         }
@@ -886,17 +931,30 @@ impl App {
         }
     }
 
-    /// マークされた複数ファイルを一括削除する（ファイルのみ）。
-    /// 成否をまとめてステータスに出し、宛先ペインを再読込（マークもクリアされる）。
+    /// マークされた複数エントリを一括削除する。ディレクトリは中身ごと再帰削除する
+    /// （種別は一覧から引く）。成否をまとめてステータスに出し、ペインを再読込
+    /// （マークもクリアされる）。
     fn fm_do_delete_many(&mut self, side: Side, names: Vec<String>) {
         let Some(fm) = self.fm.as_ref() else { return };
         let total = names.len();
+        // (名前, ディレクトリか) に解決してから実行する（一覧を跨いで参照しないため）。
+        let targets: Vec<(String, bool)> = names
+            .iter()
+            .map(|n| (n.clone(), fm.pane(side).is_dir_named(n)))
+            .collect();
         let failed = match side {
             Side::Local => {
                 let base = PathBuf::from(&fm.local.cwd);
-                names
+                targets
                     .iter()
-                    .filter(|n| std::fs::remove_file(base.join(n)).is_err())
+                    .filter(|(n, is_dir)| {
+                        let p = base.join(n);
+                        if *is_dir {
+                            std::fs::remove_dir_all(&p).is_err()
+                        } else {
+                            std::fs::remove_file(&p).is_err()
+                        }
+                    })
                     .count()
             }
             Side::Remote => {
@@ -910,9 +968,14 @@ impl App {
                         Err(_) => return total, // 全失敗扱い
                     };
                     let mut failed = 0usize;
-                    for n in &names {
+                    for (n, is_dir) in &targets {
                         let path = crate::sftpview::remote_join(&cwd, n);
-                        if sftp.remove_file(&path).await.is_err() {
+                        let r = if *is_dir {
+                            sftp.remove_dir_all(&path).await
+                        } else {
+                            sftp.remove_file(&path).await
+                        };
+                        if r.is_err() {
                             failed += 1;
                         }
                     }
@@ -983,6 +1046,126 @@ fn is_fs_root(p: &Path) -> bool {
     p.parent().is_none()
 }
 
+/// `base` に "a/b" 形式の相対パスを繋ぐ。区切りを分解して push するので
+/// Windows でも正しいパスになる。
+fn local_join(base: &Path, rel: &str) -> PathBuf {
+    let mut p = base.to_path_buf();
+    for c in rel.split('/').filter(|s| !s.is_empty()) {
+        p.push(c);
+    }
+    p
+}
+
+/// ローカルの `base` 以下を再帰列挙する（`base` 自身は含まない）。
+///
+/// 返り値は**先行順**（親ディレクトリが必ずその中身より先）。相対パスの区切りは "/"。
+/// シンボリックリンクは `symlink_metadata` で判定して辿らないので、リンクのループで
+/// 無限に潜ることはない（リンクはファイル扱いになり、転送時に中身が読まれる）。
+/// 読めないディレクトリはその枝を飛ばす。件数が上限を超えたらそこで打ち切る。
+fn walk_local(base: &Path) -> Vec<mot_ssh::WalkEntry> {
+    let mut out: Vec<mot_ssh::WalkEntry> = Vec::new();
+    // 未走査ディレクトリの相対パス。"" は base 自身。
+    let mut stack: Vec<String> = vec![String::new()];
+    while let Some(rel) = stack.pop() {
+        let dir = local_join(base, &rel);
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            log::warn!("転送: {} を読めないので飛ばす", dir.display());
+            continue;
+        };
+        for ent in rd.flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            let child = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            let is_dir = std::fs::symlink_metadata(ent.path())
+                .map(|m| m.is_dir())
+                .unwrap_or(false);
+            if out.len() >= mot_ssh::sftp::MAX_WALK_ENTRIES {
+                log::warn!(
+                    "転送: {} のエントリ数が上限 {} を超えたので打ち切る",
+                    base.display(),
+                    mot_ssh::sftp::MAX_WALK_ENTRIES
+                );
+                return out;
+            }
+            out.push(mot_ssh::WalkEntry {
+                rel: child.clone(),
+                is_dir,
+            });
+            if is_dir {
+                stack.push(child);
+            }
+        }
+    }
+    out
+}
+
+/// ローカル側の転送対象1件をジョブ列へ展開する（自分自身＋ディレクトリなら中身）。
+/// `rel` は `local_cwd` からの相対パス。
+fn plan_local_jobs(local_cwd: &str, name: &str) -> Vec<mot_ssh::WalkEntry> {
+    let root = local_join(Path::new(local_cwd), name);
+    let is_dir = std::fs::symlink_metadata(&root)
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    let mut jobs = vec![mot_ssh::WalkEntry {
+        rel: name.to_string(),
+        is_dir,
+    }];
+    if is_dir {
+        jobs.extend(walk_local(&root).into_iter().map(|e| mot_ssh::WalkEntry {
+            rel: format!("{name}/{}", e.rel),
+            is_dir: e.is_dir,
+        }));
+    }
+    jobs
+}
+
+/// 転送対象名の並びを、ディレクトリ再帰込みの平坦なジョブ列へ展開する。
+/// `rel` は転送元 cwd からの相対パスで、宛先でも同じ相対位置に置かれる。
+///
+/// 返り値の2つ目は「列挙に失敗した件数」（リモートの読み取り失敗など）。
+/// 失敗した枝は中身を転送できないので、呼び出し側で失敗数に加算する。
+async fn plan_transfer_jobs(
+    sftp: &mot_ssh::Sftp,
+    from: Side,
+    local_cwd: &str,
+    remote_cwd: &str,
+    names: &[String],
+) -> (Vec<mot_ssh::WalkEntry>, usize) {
+    let mut jobs: Vec<mot_ssh::WalkEntry> = Vec::new();
+    let mut failed = 0usize;
+    for name in names {
+        match from {
+            Side::Local => jobs.extend(plan_local_jobs(local_cwd, name)),
+            Side::Remote => {
+                let root = crate::sftpview::remote_join(remote_cwd, name);
+                let is_dir = sftp.is_dir(&root).await;
+                jobs.push(mot_ssh::WalkEntry {
+                    rel: name.clone(),
+                    is_dir,
+                });
+                if is_dir {
+                    match sftp.walk(&root).await {
+                        Ok(list) => {
+                            jobs.extend(list.into_iter().map(|e| mot_ssh::WalkEntry {
+                                rel: format!("{name}/{}", e.rel),
+                                is_dir: e.is_dir,
+                            }));
+                        }
+                        Err(e) => {
+                            log::warn!("転送: {root} の列挙に失敗: {e}");
+                            failed += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (jobs, failed)
+}
+
 /// 利用可能なローカルドライブのルート一覧（"C:\\" 形式）。
 /// Windows は GetLogicalDrives のビットマスクから生成。それ以外は空（機能無効）。
 #[cfg(windows)]
@@ -1007,5 +1190,152 @@ fn current_drive_root(cwd: Option<&str>) -> Option<String> {
         Some(format!("{}:\\", letter.to_ascii_uppercase()))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{local_join, plan_local_jobs, walk_local};
+    use std::path::{Path, PathBuf};
+
+    /// テスト専用の一時ディレクトリ（外部 crate に頼らない）。Drop で消す。
+    struct TmpDir(PathBuf);
+
+    impl TmpDir {
+        fn new(tag: &str) -> TmpDir {
+            // 同一プロセス内の並行テストでも衝突しないよう連番を混ぜる
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static N: AtomicU32 = AtomicU32::new(0);
+            let n = N.fetch_add(1, Ordering::Relaxed);
+            let p =
+                std::env::temp_dir().join(format!("moterm-walk-{tag}-{}-{n}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            TmpDir(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn local_join_splits_rel_separators() {
+        let p = local_join(Path::new("/base"), "sub/deep/f.bin");
+        assert_eq!(
+            p,
+            PathBuf::from("/base")
+                .join("sub")
+                .join("deep")
+                .join("f.bin")
+        );
+        // 空の相対パスは base そのもの
+        assert_eq!(local_join(Path::new("/base"), ""), PathBuf::from("/base"));
+    }
+
+    #[test]
+    fn walk_local_lists_tree_parent_before_children() {
+        let tmp = TmpDir::new("tree");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("sub").join("deep")).unwrap();
+        std::fs::create_dir(root.join("empty")).unwrap();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        std::fs::write(root.join("sub").join("b.txt"), b"b").unwrap();
+        std::fs::write(root.join("sub").join("deep").join("c.txt"), b"c").unwrap();
+
+        let out = walk_local(root);
+        let rels: Vec<&str> = out.iter().map(|e| e.rel.as_str()).collect();
+        // 中身は網羅される（空ディレクトリも1件として出る）
+        let mut sorted = rels.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            vec![
+                "a.txt",
+                "empty",
+                "sub",
+                "sub/b.txt",
+                "sub/deep",
+                "sub/deep/c.txt"
+            ]
+        );
+        // 種別
+        let dir_of = |name: &str| out.iter().find(|e| e.rel == name).unwrap().is_dir;
+        assert!(dir_of("sub") && dir_of("sub/deep") && dir_of("empty"));
+        assert!(!dir_of("a.txt") && !dir_of("sub/b.txt"));
+        // 先行順: 親が必ず中身より先（宛先で親を先に作れること）
+        let pos = |name: &str| rels.iter().position(|r| *r == name).unwrap();
+        assert!(pos("sub") < pos("sub/b.txt"));
+        assert!(pos("sub") < pos("sub/deep"));
+        assert!(pos("sub/deep") < pos("sub/deep/c.txt"));
+    }
+
+    #[test]
+    fn plan_local_jobs_expands_dir_and_keeps_file_alone() {
+        let tmp = TmpDir::new("plan");
+        let cwd = tmp.path();
+        std::fs::create_dir_all(cwd.join("d").join("inner")).unwrap();
+        std::fs::write(cwd.join("d").join("x.txt"), b"x").unwrap();
+        std::fs::write(cwd.join("d").join("inner").join("y.txt"), b"y").unwrap();
+        std::fs::write(cwd.join("solo.txt"), b"s").unwrap();
+        let cwd_s = cwd.to_string_lossy().to_string();
+
+        // ファイル1件はそのまま1ジョブ
+        let solo = plan_local_jobs(&cwd_s, "solo.txt");
+        assert_eq!(solo.len(), 1);
+        assert_eq!(solo[0].rel, "solo.txt");
+        assert!(!solo[0].is_dir);
+
+        // ディレクトリは自分自身＋中身。rel は cwd 起点（宛先で同じ形に置ける）
+        let jobs = plan_local_jobs(&cwd_s, "d");
+        let mut rels: Vec<&str> = jobs.iter().map(|j| j.rel.as_str()).collect();
+        let order = rels.clone();
+        rels.sort_unstable();
+        assert_eq!(rels, vec!["d", "d/inner", "d/inner/y.txt", "d/x.txt"]);
+        // 先頭は必ず対象ディレクトリ自身＝宛先で最初に作られる
+        assert_eq!(order[0], "d");
+        assert!(jobs[0].is_dir);
+        let pos = |n: &str| order.iter().position(|r| *r == n).unwrap();
+        assert!(pos("d/inner") < pos("d/inner/y.txt"));
+    }
+
+    #[test]
+    fn plan_local_jobs_missing_name_is_treated_as_file() {
+        let tmp = TmpDir::new("missing");
+        let jobs = plan_local_jobs(&tmp.path().to_string_lossy(), "nope.txt");
+        // 存在しなければファイル1件として積み、転送段で失敗として数えられる
+        assert_eq!(jobs.len(), 1);
+        assert!(!jobs[0].is_dir);
+    }
+
+    #[test]
+    fn walk_local_empty_dir_yields_nothing() {
+        let tmp = TmpDir::new("empty");
+        assert!(walk_local(tmp.path()).is_empty());
+    }
+
+    /// シンボリックリンクは辿らない＝リンクの循環でループしない。
+    #[cfg(unix)]
+    #[test]
+    fn walk_local_does_not_follow_symlink_loop() {
+        let tmp = TmpDir::new("link");
+        let root = tmp.path();
+        std::fs::create_dir(root.join("d")).unwrap();
+        std::fs::write(root.join("d").join("x.txt"), b"x").unwrap();
+        // d/loop -> ..（自分の親）。辿ると無限に潜る形。
+        std::os::unix::fs::symlink("..", root.join("d").join("loop")).unwrap();
+
+        let out = walk_local(root);
+        let rels: Vec<&str> = out.iter().map(|e| e.rel.as_str()).collect();
+        let mut sorted = rels.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec!["d", "d/loop", "d/x.txt"]);
+        // リンクは展開されず、ディレクトリ扱いにもならない
+        assert!(!out.iter().find(|e| e.rel == "d/loop").unwrap().is_dir);
     }
 }

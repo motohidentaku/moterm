@@ -10,6 +10,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// 転送のチャンクサイズ。進捗コールバックの粒度も兼ねる。
 const CHUNK: usize = 64 * 1024;
 
+/// 再帰列挙で辿るエントリ数の上限。壊れたツリー/巨大ツリーで無限に膨らむのを防ぐ。
+pub const MAX_WALK_ENTRIES: usize = 100_000;
+
 fn sftp_err<E: std::fmt::Display>(e: E) -> SshError {
     SshError::Sftp(e.to_string())
 }
@@ -22,6 +25,22 @@ pub struct DirEntry {
     pub size: u64,
     /// 更新時刻（UNIX 秒）。取得できなければ 0。
     pub mtime: u64,
+}
+
+/// 再帰列挙の結果1件。パスは走査の基準ディレクトリからの相対（区切りは常に "/"）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalkEntry {
+    pub rel: String,
+    pub is_dir: bool,
+}
+
+/// リモートパスの連結。`base` 末尾の "/" と `name` の重複を避ける。
+fn rjoin(base: &str, name: &str) -> String {
+    if base == "/" {
+        format!("/{name}")
+    } else {
+        format!("{}/{}", base.trim_end_matches('/'), name)
+    }
 }
 
 pub struct Sftp {
@@ -155,6 +174,75 @@ impl Sftp {
             .map_err(|e| SshError::Sftp(e.to_string()))
     }
 
+    /// 既に存在すれば成功として扱う mkdir（再帰転送で宛先ツリーを作るのに使う）。
+    /// 親が無い場合は作らない（呼び出し側が先行順で親から作る前提）。
+    pub async fn mkdir_p(&self, path: &str) -> Result<(), SshError> {
+        if self.exists(path).await.unwrap_or(false) {
+            return Ok(());
+        }
+        match self.mkdir(path).await {
+            Ok(()) => Ok(()),
+            // 競合で先に作られていた場合も成功扱い
+            Err(e) => {
+                if self.exists(path).await.unwrap_or(false) {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// path がディレクトリか。metadata が取れなければ false。
+    pub async fn is_dir(&self, path: &str) -> bool {
+        match self.session.metadata(path).await {
+            Ok(m) => m.is_dir(),
+            Err(_) => false,
+        }
+    }
+
+    /// `dir` 以下を再帰列挙する（`dir` 自身は含まない）。
+    ///
+    /// 返り値は**先行順**（親ディレクトリが必ずその中身より先）なので、
+    /// 順に処理すれば宛先側で親を先に作れる。シンボリックリンクは辿らない
+    /// （サーバは readdir で lstat 相当を返すため、リンクは is_dir=false になる）。
+    /// エントリ数が [`MAX_WALK_ENTRIES`] を超えたらエラーで打ち切る。
+    pub async fn walk(&self, dir: &str) -> Result<Vec<WalkEntry>, SshError> {
+        let mut out: Vec<WalkEntry> = Vec::new();
+        // 未走査ディレクトリの相対パス。"" は dir 自身。
+        let mut stack: Vec<String> = vec![String::new()];
+        while let Some(rel) = stack.pop() {
+            let abs = if rel.is_empty() {
+                dir.to_string()
+            } else {
+                rjoin(dir, &rel)
+            };
+            for e in self.read_dir(&abs).await? {
+                if e.name == "." || e.name == ".." {
+                    continue;
+                }
+                let child = if rel.is_empty() {
+                    e.name.clone()
+                } else {
+                    format!("{rel}/{}", e.name)
+                };
+                if out.len() >= MAX_WALK_ENTRIES {
+                    return Err(SshError::Sftp(format!(
+                        "{dir}: エントリ数が上限 {MAX_WALK_ENTRIES} を超えた"
+                    )));
+                }
+                out.push(WalkEntry {
+                    rel: child.clone(),
+                    is_dir: e.is_dir,
+                });
+                if e.is_dir {
+                    stack.push(child);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn rename(&self, from: &str, to: &str) -> Result<(), SshError> {
         self.session
             .rename(from, to)
@@ -176,6 +264,21 @@ impl Sftp {
             .map_err(|e| SshError::Sftp(e.to_string()))
     }
 
+    /// `dir` を中身ごと再帰削除する。[`walk`](Self::walk) は先行順なので、
+    /// 逆順に処理すれば子から先に消える。
+    pub async fn remove_dir_all(&self, dir: &str) -> Result<(), SshError> {
+        let entries = self.walk(dir).await?;
+        for e in entries.iter().rev() {
+            let path = rjoin(dir, &e.rel);
+            if e.is_dir {
+                self.remove_dir(&path).await?;
+            } else {
+                self.remove_file(&path).await?;
+            }
+        }
+        self.remove_dir(dir).await
+    }
+
     pub async fn exists(&self, path: &str) -> Result<bool, SshError> {
         self.session
             .try_exists(path)
@@ -186,3 +289,17 @@ impl Sftp {
 
 // Handle の型引数を lib 側の ClientHandler に合わせるための別名。
 use crate::handler::ClientHandler as ClientHandlerAlias;
+
+#[cfg(test)]
+mod tests {
+    use super::rjoin;
+
+    #[test]
+    fn rjoin_avoids_double_slash() {
+        assert_eq!(rjoin("/home/u", "a.txt"), "/home/u/a.txt");
+        assert_eq!(rjoin("/home/u/", "a.txt"), "/home/u/a.txt");
+        assert_eq!(rjoin("/", "a.txt"), "/a.txt");
+        // 相対パスの入れ子（walk が作る rel をそのまま渡すケース）
+        assert_eq!(rjoin("/base", "sub/deep/f.bin"), "/base/sub/deep/f.bin");
+    }
+}

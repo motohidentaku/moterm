@@ -21,7 +21,9 @@ to and from your local machine, and driving Claude Code / Codex on the remote si
   (show toggle, click to submit).
 - **SSH essentials**: static port forwarding -L/-R (F2 shows a neon status card at the
   top-right of the terminal), `on_connect` auto-input, session logging (raw bytes + plain text).
-- **SFTP (F3)**: two-pane file manager (click / drag-and-drop transfer, progress bar,
+- **SFTP (F3)**: two-pane file manager (click / drag-and-drop transfer, **recursive
+  directory transfer** — directories can be marked with Space, delete is recursive too —
+  progress bar,
   mirror sync `m`, mkdir/rename/delete, column sort, date column), drag-and-drop upload
   onto the window. **Embedded in the connect screen** (terminal⇄SFTP sub-tab switch,
   toolbar, Transfer Queue; auto-closes on disconnect).

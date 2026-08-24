@@ -23,7 +23,7 @@ pub use handler::{HostKeyDecision, HostKeyVerifier};
 pub use params::{ConnectParams, ProxyJump};
 pub use pty::{PaneEvent, PaneHandle};
 pub use session::SshSession;
-pub use sftp::{DirEntry, Sftp};
+pub use sftp::{DirEntry, Sftp, WalkEntry};
 
 /// known_hosts を OpenSSH 互換で照合し、TOFU 判断へ橋渡しするヘルパ。
 pub mod known_hosts {

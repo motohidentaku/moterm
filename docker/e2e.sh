@@ -15,12 +15,20 @@ BIN=$(ls -t target/debug/deps/ssh_e2e-* 2>/dev/null | grep -v '\.d$' | head -1)
 if [ -z "${BIN:-}" ]; then echo "test binary not found"; exit 1; fi
 echo "test binary: $BIN"
 
+# AppArmor 適用不能な環境（QNAP NAS 等）と、sshd 特権分離ユーザ欠落への対処。
+# 詳細は docker/lib.sh。
+# shellcheck source=docker/lib.sh
+. "$(dirname "$0")/lib.sh"
+detect_secopt "$IMAGE"
+
 echo "=== phase2: root container (create user + sshd + run) ==="
 docker run --rm \
+  "${SECOPT[@]+"${SECOPT[@]}"}" \
   -v "$PWD":/work \
   -v motmot-cargo-registry:/usr/local/cargo/registry \
   -w /work \
   "$IMAGE" bash -eu -c '
+    '"$ENSURE_SSHD_USER"'
     TESTUSER=moterm
     TESTPW=moterm-test-pw
     PORT=2222

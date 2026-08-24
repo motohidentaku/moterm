@@ -153,11 +153,11 @@ impl PaneFm {
         self.sel = (self.sel as i32 + delta).clamp(0, n - 1) as usize;
     }
 
-    /// 現在の選択行のマークをトグルして1つ下へ進む（ファイルのみ対象）。
-    /// ディレクトリ・".." はマークできない（そのまま下へ進むだけ）。
+    /// 現在の選択行のマークをトグルして1つ下へ進む。
+    /// ディレクトリもマークできる（転送は中身ごと再帰）。".." はマークできない。
     pub fn toggle_mark_sel(&mut self) {
         if let Some(e) = self.entries.get(self.sel) {
-            if !e.is_dir && !e.parent {
+            if !e.parent {
                 let name = e.name.clone();
                 if !self.marked.remove(&name) {
                     self.marked.insert(name);
@@ -167,16 +167,24 @@ impl PaneFm {
         self.move_sel(1);
     }
 
-    /// 指定インデックスのマークをトグルする（マウス Ctrl+クリック用。ファイルのみ）。
+    /// 指定インデックスのマークをトグルする（マウス Ctrl+クリック用。".." は不可）。
     pub fn toggle_mark_at(&mut self, idx: usize) {
         if let Some(e) = self.entries.get(idx) {
-            if !e.is_dir && !e.parent {
+            if !e.parent {
                 let name = e.name.clone();
                 if !self.marked.remove(&name) {
                     self.marked.insert(name);
                 }
             }
         }
+    }
+
+    /// 一覧中の `name` がディレクトリか（無ければ false）。
+    /// 転送/削除で名前しか持たない場面から種別を引くのに使う。
+    pub fn is_dir_named(&self, name: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.name == name && e.is_dir && !e.parent)
     }
 
     /// マークをすべて解除する。
@@ -194,7 +202,7 @@ impl PaneFm {
     }
 
     /// 転送/削除の対象名リスト。マークがあればそれ（表示順）、無ければ現在の選択1件
-    /// （".." は除外）。ディレクトリはマーク対象外なので、マーク時は常にファイルのみ。
+    /// （".." は除外）。ディレクトリを含むことがあり、その場合は中身ごと再帰的に扱う。
     pub fn action_targets(&self) -> Vec<String> {
         let marked = self.marked_names();
         if !marked.is_empty() {
@@ -1196,7 +1204,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_mark_marks_files_advances_and_skips_dirs() {
+    fn toggle_mark_marks_files_and_dirs_but_not_parent() {
         let mut p = PaneFm::new(Side::Local, "/".into());
         p.set_listing(
             vec![
@@ -1212,22 +1220,33 @@ mod tests {
         p.toggle_mark_sel();
         assert!(p.marked.is_empty());
         assert_eq!(p.sel, 1);
-        // "sub"（ディレクトリ）もマーク不可
+        // "sub"（ディレクトリ）はマーク可（転送は中身ごと再帰）
         p.toggle_mark_sel();
-        assert!(p.marked.is_empty());
+        assert_eq!(p.marked_names(), vec!["sub"]);
         assert_eq!(p.sel, 2);
         // "a.txt" をマーク→下へ
         p.toggle_mark_sel();
-        assert_eq!(p.marked_names(), vec!["a.txt"]);
+        assert_eq!(p.marked_names(), vec!["sub", "a.txt"]);
         assert_eq!(p.sel, 3);
         // "b.txt" をマーク→末尾でクランプ
         p.toggle_mark_sel();
-        assert_eq!(p.marked_names(), vec!["a.txt", "b.txt"]);
+        assert_eq!(p.marked_names(), vec!["sub", "a.txt", "b.txt"]);
         assert_eq!(p.sel, 3);
         // 再トグルで解除
         p.sel = 2;
         p.toggle_mark_sel();
-        assert_eq!(p.marked_names(), vec!["b.txt"]);
+        assert_eq!(p.marked_names(), vec!["sub", "b.txt"]);
+    }
+
+    #[test]
+    fn is_dir_named_resolves_kind_from_listing() {
+        let mut p = PaneFm::new(Side::Local, "/".into());
+        p.set_listing(vec![Entry::dir("sub"), Entry::file("a.txt", 1)], true);
+        assert!(p.is_dir_named("sub"));
+        assert!(!p.is_dir_named("a.txt"));
+        assert!(!p.is_dir_named("nope"));
+        // ".." はディレクトリだが対象外（削除・転送に混ぜない）
+        assert!(!p.is_dir_named(".."));
     }
 
     #[test]
