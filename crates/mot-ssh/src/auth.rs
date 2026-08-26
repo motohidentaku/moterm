@@ -5,7 +5,7 @@ use crate::error::SshError;
 use mot_core::model::AuthMethod;
 use russh::client::{AuthResult, Handle};
 use russh::keys::key::PrivateKeyWithHashAlg;
-use russh::keys::{load_secret_key, PrivateKey};
+use russh::keys::{decode_secret_key, PrivateKey};
 use std::sync::Arc;
 
 use crate::handler::ClientHandler;
@@ -131,26 +131,169 @@ async fn auth_publickey(
 }
 
 /// 鍵ファイルを読み込む。.ppk なら OpenSSH へ変換し、暗号化鍵はパスフレーズを要求する。
+///
+/// パスフレーズを訊くのは**暗号化されていると判定できたときだけ**。以前は読み込みに
+/// 失敗したら理由を問わず要求していたため、パスが違う・読めない・壊れているといった
+/// ケースでも「パスフレーズ無しの鍵なのにパスワードを訊かれる」状態になっていた。
 fn load_key_with_conversion(
     path: &std::path::Path,
     cb: &mut AuthCallbacks,
 ) -> Result<PrivateKey, SshError> {
+    let text = read_key_file(path)?;
     let is_ppk = path
         .extension()
         .map(|e| e.eq_ignore_ascii_case("ppk"))
         .unwrap_or(false);
     if is_ppk {
-        let content = std::fs::read_to_string(path).map_err(|_| SshError::KeyNotFound)?;
-        let openssh = mot_core::ppk::convert_ppk(&content)
-            .map_err(|e| SshError::PpkConvert(e.to_string()))?;
+        let openssh =
+            mot_core::ppk::convert_ppk(&text).map_err(|e| SshError::PpkConvert(e.to_string()))?;
         return PrivateKey::from_openssh(&openssh).map_err(|_| SshError::KeyParse);
     }
-    // まずパスフレーズ無しで試し、失敗したら要求する
-    match load_secret_key(path, None) {
+    match decode_secret_key(&text, None) {
         Ok(k) => Ok(k),
-        Err(_) => {
+        Err(e) if is_encrypted(&e, &text) => {
             let phrase = (cb.passphrase)().ok_or(SshError::AuthCancelled)?;
-            load_secret_key(path, Some(&phrase)).map_err(|_| SshError::KeyParse)
+            decode_secret_key(&text, Some(&phrase)).map_err(|_| SshError::KeyParse)
         }
+        Err(e) => {
+            log::warn!("鍵を解析できません: {} ({e})", path.display());
+            Err(SshError::KeyParse)
+        }
+    }
+}
+
+/// 鍵ファイルを文字列として読む。失敗理由をそのまま UI に出せる形に落とす
+/// （ここを握り潰すと「鍵が読めない」が「パスフレーズを訊かれる」に化ける）。
+fn read_key_file(path: &std::path::Path) -> Result<String, SshError> {
+    std::fs::read_to_string(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => SshError::KeyNotFound,
+        _ => SshError::Other(format!("鍵ファイルを読めません: {} ({e})", path.display())),
+    })
+}
+
+/// パスフレーズを要求すべきエラーか。
+///
+/// OpenSSH 形式と PKCS#5(PEM) は russh が `KeyIsEncrypted` を返すが、
+/// PKCS#8 の暗号化鍵（`BEGIN ENCRYPTED PRIVATE KEY`）はパスワード無しだと
+/// ただの ASN.1 パースエラーになるため、本文のヘッダからも判定する。
+fn is_encrypted(err: &russh::keys::Error, text: &str) -> bool {
+    matches!(err, russh::keys::Error::KeyIsEncrypted)
+        || text.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----")
+        || text.contains("Proc-Type: 4,ENCRYPTED")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use russh::keys::ssh_key::rand_core::OsRng;
+    use russh::keys::ssh_key::{Algorithm, LineEnding};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// パスフレーズ要求の回数を数えるコールバック。
+    fn counting_cb(answer: Option<&str>) -> (AuthCallbacks, Arc<AtomicUsize>) {
+        let n = Arc::new(AtomicUsize::new(0));
+        let n2 = n.clone();
+        let ans = answer.map(str::to_string);
+        let mut cb = AuthCallbacks::none();
+        cb.passphrase = Box::new(move || {
+            n2.fetch_add(1, Ordering::Relaxed);
+            ans.clone()
+        });
+        (cb, n)
+    }
+
+    struct TmpKey(std::path::PathBuf);
+
+    impl TmpKey {
+        /// 使い捨ての鍵を生成して書き出す（pass=Some で暗号化）。
+        fn new(tag: &str, pass: Option<&str>) -> TmpKey {
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let n = N.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("moterm-key-{tag}-{}-{n}", std::process::id()));
+            let key = russh::keys::PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+            let pem = match pass {
+                Some(p) => key
+                    .encrypt(&mut OsRng, p)
+                    .unwrap()
+                    .to_openssh(LineEnding::LF),
+                None => key.to_openssh(LineEnding::LF),
+            }
+            .unwrap();
+            std::fs::write(&path, pem.as_bytes()).unwrap();
+            TmpKey(path)
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TmpKey {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// 本題: パスフレーズ無しの鍵ではプロンプトを一切出さない。
+    #[test]
+    fn unencrypted_key_never_asks_for_passphrase() {
+        let key = TmpKey::new("plain", None);
+        let (mut cb, calls) = counting_cb(Some("should-not-be-used"));
+        let loaded = load_key_with_conversion(key.path(), &mut cb).expect("load");
+        assert_eq!(loaded.algorithm(), Algorithm::Ed25519);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "パスフレーズを訊いてはいけない"
+        );
+    }
+
+    /// 暗号化鍵では従来どおり1回だけ訊いて、答えで復号できる。
+    #[test]
+    fn encrypted_key_asks_once_and_decrypts() {
+        let key = TmpKey::new("enc", Some("secretpw"));
+        let (mut cb, calls) = counting_cb(Some("secretpw"));
+        load_key_with_conversion(key.path(), &mut cb).expect("load");
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    /// 鍵が無いときはパスフレーズを訊かず、そのまま KeyNotFound を返す。
+    #[test]
+    fn missing_key_reports_not_found_without_prompt() {
+        let path = std::env::temp_dir().join("moterm-key-does-not-exist");
+        let _ = std::fs::remove_file(&path);
+        let (mut cb, calls) = counting_cb(Some("pw"));
+        let err = load_key_with_conversion(&path, &mut cb).unwrap_err();
+        assert!(matches!(err, SshError::KeyNotFound), "got {err:?}");
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    /// 壊れた鍵もパスフレーズ要求に化けさせず KeyParse にする。
+    #[test]
+    fn corrupt_key_reports_parse_error_without_prompt() {
+        let path = std::env::temp_dir().join(format!("moterm-key-corrupt-{}", std::process::id()));
+        std::fs::write(&path, b"-----BEGIN OPENSSH PRIVATE KEY-----\nnot-base64\n").unwrap();
+        let (mut cb, calls) = counting_cb(Some("pw"));
+        let err = load_key_with_conversion(&path, &mut cb).unwrap_err();
+        assert!(matches!(err, SshError::KeyParse), "got {err:?}");
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// PKCS#8 の暗号化鍵は russh が KeyIsEncrypted を返さないので、
+    /// ヘッダで判定してパスフレーズを訊けること。
+    #[test]
+    fn pkcs8_encrypted_header_triggers_prompt() {
+        let err = russh::keys::Error::KeyIsCorrupt;
+        assert!(is_encrypted(
+            &err,
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----\nxxx\n"
+        ));
+        assert!(is_encrypted(
+            &err,
+            "Proc-Type: 4,ENCRYPTED\nDEK-Info: ...\n"
+        ));
+        assert!(!is_encrypted(&err, "-----BEGIN PRIVATE KEY-----\nxxx\n"));
     }
 }

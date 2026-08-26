@@ -353,13 +353,20 @@ impl Default for Config {
 
 /// `~` をホームディレクトリに展開する
 pub fn expand_tilde(path: &str) -> std::path::PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    } else if path == "~" {
+    if path == "~" {
         if let Some(home) = dirs::home_dir() {
             return home;
+        }
+        return std::path::PathBuf::from(path);
+    }
+    // 区切りの判定は std::path::is_separator に任せる。Windows では `~\.ssh\id_ed25519`
+    // のようにバックスラッシュで書くのが自然で、`~/` しか見ていないと展開されないまま
+    // 「~\...」という名前のファイルを開こうとして失敗する。
+    if let Some(rest) = path.strip_prefix('~') {
+        if rest.starts_with(std::path::is_separator) {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(rest.trim_start_matches(std::path::is_separator));
+            }
         }
     }
     std::path::PathBuf::from(path)
@@ -390,5 +397,47 @@ mod tests {
         let cfg: KeepaliveCfg = serde_json::from_str(r#"{"interval_sec": 0}"#).unwrap();
         assert_eq!(cfg.interval_sec, 0);
         assert_eq!(cfg.max, 3);
+    }
+
+    #[test]
+    fn expand_tilde_handles_home_and_plain_paths() {
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(expand_tilde("~"), home);
+        assert_eq!(
+            expand_tilde("~/.ssh/id_ed25519"),
+            home.join(".ssh/id_ed25519")
+        );
+        // チルダ以外はそのまま
+        assert_eq!(
+            expand_tilde("/etc/ssh/key"),
+            std::path::PathBuf::from("/etc/ssh/key")
+        );
+        // "~" で始まっても区切りが続かなければ展開しない（~user は非対応）
+        assert_eq!(
+            expand_tilde("~other/key"),
+            std::path::PathBuf::from("~other/key")
+        );
+    }
+
+    /// Windows では `~\.ssh\id_ed25519` と書くのが自然。展開されないと
+    /// 鍵が読めず、呼び出し側でパスフレーズ要求に化けていた。
+    #[cfg(windows)]
+    #[test]
+    fn expand_tilde_accepts_backslash_on_windows() {
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(
+            expand_tilde(r"~\.ssh\id_ed25519"),
+            home.join(".ssh").join("id_ed25519")
+        );
+    }
+
+    /// 逆に Unix では `\` は区切りではないので、ファイル名の一部として残す。
+    #[cfg(unix)]
+    #[test]
+    fn expand_tilde_keeps_backslash_on_unix() {
+        assert_eq!(
+            expand_tilde(r"~\weird"),
+            std::path::PathBuf::from(r"~\weird")
+        );
     }
 }
