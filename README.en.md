@@ -99,7 +99,7 @@ return config
 | F5 | Reconnect | Ctrl+PageUp/Dn | Switch tab |
 | Ctrl+Shift+C / V | Copy / paste | Ctrl+Shift+F | Scrollback search |
 | Ctrl+Shift+D | SFTP-download selected path | Ctrl+Shift+R | Reload config |
-| Shift+PageUp/Dn | Scrollback | Ctrl+Shift+B | Broadcast input |
+| Shift+PageUp/Dn | Scrollback | Ctrl+Shift+B | Broadcast input (off by default; set `config.enable_broadcast = true`) |
 | Ctrl+Shift+E / O | Split pane (horizontal / vertical) | Ctrl+Shift+X | Close pane |
 | Ctrl+Shift+Arrows | Move pane focus | Ctrl+1–9 / Ctrl+Tab | Switch tab |
 | Ctrl+Shift+P / N | Prev / next prompt (OSC 133) | F2 | Port-forward panel |

@@ -216,6 +216,17 @@ mod tests {
         assert_eq!(cfg.scrollback_lines, 1000);
         assert_eq!(cfg.secret_store, "encrypted-file");
         assert!(cfg.use_ime);
+        assert!(!cfg.enable_broadcast);
+    }
+
+    #[test]
+    fn enable_broadcast_opt_in() {
+        let cfg = eval_config(
+            "local c = (require 'moterm').config(); c.enable_broadcast = true; return c",
+            "bc.lua",
+        )
+        .unwrap();
+        assert!(cfg.enable_broadcast);
     }
 
     #[test]

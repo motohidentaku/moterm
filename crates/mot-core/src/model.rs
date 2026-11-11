@@ -305,6 +305,10 @@ pub struct Config {
     /// リモートのシステムメトリクス採取（NEO-UI の情報パネル）
     #[serde(default)]
     pub metrics: MetricsCfg,
+    /// ブロードキャスト入力（Ctrl+Shift+B で全ペインへ同時入力）を有効にする。
+    /// 誤爆すると全ホストへ同じキーが届くため既定 false。true で Ctrl+Shift+B が効く。
+    #[serde(default)]
+    pub enable_broadcast: bool,
 }
 
 fn default_font_size() -> f32 {
@@ -347,6 +351,7 @@ impl Default for Config {
             treat_east_asian_ambiguous_width_as_wide: false,
             ui: None,
             metrics: MetricsCfg::default(),
+            enable_broadcast: false,
         }
     }
 }

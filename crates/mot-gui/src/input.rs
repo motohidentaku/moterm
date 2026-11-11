@@ -140,6 +140,24 @@ pub fn action_to_gui(action: Action) -> GuiAction {
 /// config.keys で扱える14アクションは keymap 側で先に解決されるため、ここには**含めない**
 /// （分割/フォーカス/ブロードキャスト/Ctrl+Tab/Ctrl+数字/F3 SFTP のみ）。
 pub fn fixed_shortcut(term_key: &TermKey, mods: Mods) -> Option<GuiAction> {
+    fixed_shortcut_cfg(term_key, mods, true)
+}
+
+/// `fixed_shortcut` の設定反映版。`enable_broadcast` が false のとき Ctrl+Shift+B は
+/// GUI で消費せず None（通常のキーとして PTY へ流れる）。GUI 本体はこちらを使う。
+pub fn fixed_shortcut_cfg(
+    term_key: &TermKey,
+    mods: Mods,
+    enable_broadcast: bool,
+) -> Option<GuiAction> {
+    let action = fixed_shortcut_all(term_key, mods);
+    match action {
+        Some(GuiAction::Broadcast) if !enable_broadcast => None,
+        other => other,
+    }
+}
+
+fn fixed_shortcut_all(term_key: &TermKey, mods: Mods) -> Option<GuiAction> {
     let ctrl = mods.ctrl;
     let shift = mods.shift;
     match term_key {
@@ -269,6 +287,29 @@ mod tests {
             terminal_shortcut(&TermKey::Char('b'), m(true, true)),
             Some(GuiAction::Broadcast)
         );
+    }
+
+    #[test]
+    fn broadcast_shortcut_gated_by_config() {
+        // enable_broadcast=false（既定）では Ctrl+Shift+B を GUI で消費しない。
+        assert_eq!(
+            fixed_shortcut_cfg(&TermKey::Char('b'), m(true, true), false),
+            None
+        );
+        assert_eq!(
+            fixed_shortcut_cfg(&TermKey::Char('B'), m(true, true), false),
+            None
+        );
+        assert_eq!(
+            fixed_shortcut_cfg(&TermKey::Char('b'), m(true, true), true),
+            Some(GuiAction::Broadcast)
+        );
+        // 他の固定ショートカットには影響しない。
+        assert_eq!(
+            fixed_shortcut_cfg(&TermKey::Char('e'), m(true, true), false),
+            Some(GuiAction::SplitH)
+        );
+        assert!(!mot_core::model::Config::default().enable_broadcast);
     }
 
     #[test]

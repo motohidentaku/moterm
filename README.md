@@ -24,7 +24,7 @@ Rust による SSH 専用ターミナルクライアント。
 - **端末**: SGR 全属性、256色/truecolor、CJK 全角、代替スクリーン、OSC 7/8/52、OSC 133 コマンド境界、
   ブラケットペースト、マウスレポート（vim/htop 等、Shift で抑止）、ウィンドウリサイズで行列が動的に追従
 - **タブ/ペイン**: 可変幅タブ（ドラッグ並べ替え・ダブルクリック rename・右クリックメニュー）、
-  二分木ペイン分割、ブロードキャスト入力（赤帯）
+  二分木ペイン分割、ブロードキャスト入力（赤帯、`enable_broadcast` でオプトイン）
 - **スクロールバック・コピペ**: ホイール/バー（サムドラッグ）/Shift+PageUp/Dn、Ctrl+Shift+F 検索
   （端末上部中央に neon 検索バー・件数表示）、ドラッグ/ダブル/トリプル選択、Alt 矩形、
   Ctrl+クリックで URL を開く
@@ -205,7 +205,7 @@ Claude Code 側は `/hooks` で登録内容を確認でき、`claude --debug` �
 | F5 | 再接続 | Ctrl+PageUp/Dn | タブ切替 |
 | Ctrl+Shift+C / V | コピー / 貼り付け | Ctrl+Shift+F | スクロールバック検索 |
 | Ctrl+Shift+D | 選択パスを SFTP ダウンロード | Ctrl+Shift+R | 設定リロード |
-| Shift+PageUp/Dn | スクロールバック | Ctrl+Shift+B | ブロードキャスト入力 |
+| Shift+PageUp/Dn | スクロールバック | Ctrl+Shift+B | ブロードキャスト入力（既定 OFF。`config.enable_broadcast = true` で有効） |
 | Ctrl+Shift+E / O | ペイン分割（横 / 縦） | Ctrl+Shift+X | ペインを閉じる |
 | Ctrl+Shift+矢印 | ペインフォーカス移動 | Ctrl+1〜9 / Ctrl+Tab | タブ切替 |
 | Ctrl+Shift+P / N | 前 / 次のプロンプトへ（OSC 133） | F2 | ポートフォワードパネル |

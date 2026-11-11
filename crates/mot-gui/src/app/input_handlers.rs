@@ -226,7 +226,9 @@ impl App {
                 return;
             }
         }
-        if let Some(action) = crate::input::fixed_shortcut(&tk, mods) {
+        if let Some(action) =
+            crate::input::fixed_shortcut_cfg(&tk, mods, self.config.enable_broadcast)
+        {
             self.handle_gui_action(action);
             return;
         }
@@ -290,7 +292,10 @@ impl App {
             GuiAction::FocusRight => self.move_focus(Move::Right),
             GuiAction::FocusUp => self.move_focus(Move::Up),
             GuiAction::FocusDown => self.move_focus(Move::Down),
-            GuiAction::Broadcast => self.broadcast = !self.broadcast,
+            // 設定で無効なら常に OFF（キー経路は fixed_shortcut_cfg で既に弾いている）。
+            GuiAction::Broadcast => {
+                self.broadcast = self.config.enable_broadcast && !self.broadcast
+            }
             GuiAction::PfPanel => self.show_pf_panel = !self.show_pf_panel,
             GuiAction::InfoPanel => self.neo_info_visible = !self.neo_info_visible,
             GuiAction::Sftp => self.open_sftp_fm(),
@@ -473,6 +478,9 @@ impl App {
             self.config = cfg;
             self.theme = Theme::builtin(self.config.color_scheme.as_deref().unwrap_or("default"));
             self.keymap = mot_core::keymap::Keymap::from_config(&self.config.keys);
+            if !self.config.enable_broadcast {
+                self.broadcast = false;
+            }
             // ウィンドウサイズも更新（次の sync_mode_size で反映）
             self.term_size = crate::app::mode_sizes(&self.config);
             self.rebuild_launcher();
